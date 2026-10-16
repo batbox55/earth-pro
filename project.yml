@@ -1,0 +1,54 @@
+name: EarthPro
+options:
+  deploymentTarget:
+    macOS: "14.0"
+settings:
+  base:
+    PRODUCT_BUNDLE_IDENTIFIER: local.earthpro.app
+    DEVELOPMENT_TEAM: 3YU8N266R8
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "3"
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_HARDENED_RUNTIME: YES
+    ENABLE_APP_SANDBOX: YES
+    CODE_SIGN_ENTITLEMENTS: Configuration/EarthPro.entitlements
+targets:
+  EarthPro:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/EarthPro
+        excludes: [Resources]
+      - path: Sources/EarthPro/Resources
+        buildPhase: resources
+    info:
+      path: Configuration/Info.plist
+      properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleDisplayName: Earth Pro
+        CFBundleName: Earth Pro
+        CFBundleIconFile: EarthProIcon
+        LSApplicationCategoryType: public.app-category.travel
+        NSPrincipalClass: NSApplication
+        NSHighResolutionCapable: true
+        ITSAppUsesNonExemptEncryption: false
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: KML Places
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Alternate
+            CFBundleTypeExtensions: [kml, kmz]
+    settings:
+      base:
+        PRODUCT_NAME: Earth Pro
+        GENERATE_INFOPLIST_FILE: NO
+schemes:
+  EarthPro:
+    build:
+      targets:
+        EarthPro: all
+    archive:
+      config: Release
