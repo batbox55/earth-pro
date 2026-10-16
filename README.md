@@ -6,6 +6,10 @@ Earth Pro is a native Swift Mac app for exploring a globe, plotting places, meas
 
 [Download for Mac](https://github.com/batbox55/earth-pro/releases/latest) · [Website](https://zachenson.com/earth-pro/) · [Support](https://zachenson.com/earth-pro/support) · [Privacy](https://zachenson.com/earth-pro/privacy)
 
+![Earth Pro plotting custom address pins in Manhattan](docs/screenshots/address-pins.jpg)
+
+*Actual app interface. Apple Maps imagery and third-party content retain their attribution and terms.*
+
 ## From an address list to a useful map
 
 - **Plot up to 250 addresses at once.** Paste one address per line, review matches and unresolved entries, and frame the results together. Duplicate lines are skipped.
