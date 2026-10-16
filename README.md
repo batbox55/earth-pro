@@ -1,8 +1,10 @@
 # Earth Pro for Mac
 
-**Turn addresses into a map you can work with.**
+**Keep your globe on the desktop.**
 
 Earth Pro is a native Swift Mac app for exploring a globe, plotting places, measuring distance and land, and building portable KML projects. Start with free map providers; add your own Google Maps API key when you want supported Google imagery and photorealistic 3D.
+
+Google has announced that new Google Earth Pro desktop downloads end **June 25, 2027**; existing installations can continue working. Earth Pro is an independent Mac alternative for keeping a desktop mapping workflow with supported KML/KMZ projects, measurements, custom pins, and image overlays. See [Google’s announcement](https://support.google.com/earth/thread/448773864). Earth Pro is not affiliated with Google and does not reproduce every Google Earth feature.
 
 [Download for Mac](https://github.com/batbox55/earth-pro/releases/latest) · [Website](https://zachenson.com/earth-pro/) · [Support](https://zachenson.com/earth-pro/support) · [Privacy](https://zachenson.com/earth-pro/privacy)
 
