@@ -54,7 +54,7 @@ struct MapCanvas: NSViewRepresentable {
             let point = GeoPoint(latitude: coordinate.latitude, longitude: coordinate.longitude)
             completion(point.isValid ? point : nil)
         }
-        input.pickLayerAt = { [weak map, weak store] point in
+        input.pickLayerAt = { [weak map, weak store, weak coordinator = context.coordinator] point in
             guard let map, let store else { return false }
             for annotation in map.annotations {
                 guard let layer = annotation as? LayerAnnotation, let item = layer.item,
@@ -62,7 +62,7 @@ struct MapCanvas: NSViewRepresentable {
                       map.convert(marker.bounds, from: marker).insetBy(dx: -3, dy: -3).contains(point) else { continue }
                 store.layerSelection = item; return true
             }
-            return false
+            return coordinator?.pickPublicData(at: point, in: map) ?? false
         }
         input.stopMotion = { [weak map] in if let map { map.setCamera(map.camera, animated: false) } }
         context.coordinator.input = input
@@ -100,7 +100,7 @@ struct MapCanvas: NSViewRepresentable {
         var lastCamera: UUID?
         var appearance = ""
         var streetTiles: OpenStreetMapTiles?
-        var archiveTiles: EarthArchiveTiles?
+        var archiveTiles: HistoricalTileOverlay?
         var cloudTiles: EarthCloudTiles?
         var lastLayers: EarthLayers?
         var lastLayerRevision: UUID?
@@ -110,18 +110,26 @@ struct MapCanvas: NSViewRepresentable {
         var lastTool: EarthTool = .navigate
         var lastSelection: UUID?
         var colors: [ObjectIdentifier: NSColor] = [:]
+        var publicDataRevision: UUID?
+        var publicDataOverlays: [PublicDataKind: MKMultiPolyline] = [:]
+        var publicDataDrawn: [PublicDataFeature] = []
         var settingCamera = false
         init(_ store: EarthStore) { self.store = store }
         var imageRevision: UUID?
         var imageBase=""
         func update(_ map: PickingMapView) {
+            if store.publicDataViewSize != map.bounds.size {
+                let size = map.bounds.size
+                DispatchQueue.main.async { [weak store] in if size.width > 1 && size.height > 1 { store?.publicDataViewSize = size } }
+            }
             map.isPicking = store.tool != .navigate
-            let style = store.provider.rawValue + store.mapStyle.rawValue + String(store.terrain) + String(describing: store.layers)
+            let style = store.provider.rawValue + store.mapStyle.rawValue + String(store.terrain) + String(store.historicalImagery) + String(describing: store.layers)
             if appearance != style {
                 appearance = style
+                lastCamera = nil
                 if let archiveTiles { map.removeOverlay(archiveTiles); self.archiveTiles = nil }
                 if let streetTiles { map.removeOverlay(streetTiles); self.streetTiles = nil }
-                map.isPitchEnabled = store.provider != .openStreetMap
+                map.isPitchEnabled = store.provider != .openStreetMap && !store.historicalImagery
                 map.showsPitchControl = false
                 if store.provider == .openStreetMap {
                     map.preferredConfiguration = MKStandardMapConfiguration(elevationStyle: .flat)
@@ -132,7 +140,7 @@ struct MapCanvas: NSViewRepresentable {
                     }
                     map.addOverlay(tiles, level: .aboveLabels)
                 } else {
-                let elevation: MKMapConfiguration.ElevationStyle = store.terrain ? .realistic : .flat
+                let elevation: MKMapConfiguration.ElevationStyle = store.terrain && !store.historicalImagery ? .realistic : .flat
                 let enabled = store.layers.enabled
                 var categories: [MKPointOfInterestCategory] = []
                 if enabled["parks"] == true { categories += [.park, .nationalPark] }
@@ -150,14 +158,14 @@ struct MapCanvas: NSViewRepresentable {
                         configuration.pointOfInterestFilter = poi; configuration.showsTraffic = enabled["traffic"] == true; map.preferredConfiguration = configuration
                     }
                 } else { map.preferredConfiguration = MKImageryMapConfiguration(elevationStyle: elevation) }
-                map.showsBuildings = enabled["buildings"] == true
+                map.showsBuildings = enabled["buildings"] == true && !store.historicalImagery
                 map.showsTraffic = enabled["traffic"] == true
                 }
             }
-            if store.historicalImagery {
-                if archiveTiles?.date != store.imageryDate {
+            if let source = store.activeHistoricalImagery {
+                if archiveTiles?.source != source {
                     if let archiveTiles { map.removeOverlay(archiveTiles) }
-                    let tiles = EarthArchiveTiles(date: store.imageryDate); archiveTiles = tiles; map.addOverlay(tiles, level: .aboveLabels)
+                    let tiles = HistoricalTileOverlay(source: source); archiveTiles = tiles; map.addOverlay(tiles, level: .aboveLabels)
                 }
             } else if let archiveTiles { map.removeOverlay(archiveTiles); self.archiveTiles = nil }
             if store.layers.primary && store.layers.clouds {
@@ -166,7 +174,7 @@ struct MapCanvas: NSViewRepresentable {
             if map.window != nil, map.bounds.width > 1, map.bounds.height > 1, lastCamera != store.cameraRequest {
                 let initial = lastCamera == nil
                 lastCamera = store.cameraRequest; settingCamera = true
-                let camera = MKMapCamera(lookingAtCenter: store.center.coordinate, fromDistance: store.distance, pitch: store.terrain && store.provider != .openStreetMap ? store.pitch : 0, heading: store.heading)
+                let camera = MKMapCamera(lookingAtCenter: store.center.coordinate, fromDistance: store.distance, pitch: store.terrain && store.provider != .openStreetMap && !store.historicalImagery ? store.pitch : 0, heading: store.heading)
                 map.setCamera(camera, animated: !initial && !store.navigationIsActive)
                 settingCamera = false
             }
@@ -175,7 +183,7 @@ struct MapCanvas: NSViewRepresentable {
             if drawn != visible || lastVertices != store.vertices || lastTool != store.tool || lastSelection != store.selection || lastLayers != store.layers || lastLayerRevision != store.layerRevision || lastLabelDetail != labelDetail {
                 lastLayers = store.layers; lastLayerRevision = store.layerRevision; lastLabelDetail = labelDetail
                 drawn = visible; lastVertices = store.vertices; lastTool = store.tool; lastSelection = store.selection
-                map.removeAnnotations(map.annotations); map.removeOverlays(map.overlays.filter { !($0 is MKTileOverlay) && !($0 is EarthGroundImage) }); colors = [:]
+                map.removeAnnotations(map.annotations); map.removeOverlays(map.overlays.filter { overlay in !((overlay is MKTileOverlay) || (overlay is EarthGroundImage) || publicDataOverlays.values.contains(where: { $0 === overlay as AnyObject })) }); colors = [:]
                 let enabled = store.layers.enabled
                 if enabled["borders"] == true {
                     let lines = EarthBaseData.countries.flatMap(\.outlines).map { points -> MKPolyline in
@@ -212,6 +220,7 @@ struct MapCanvas: NSViewRepresentable {
                     let pin = MKPointAnnotation(); pin.coordinate = point.coordinate; pin.title = "Point \(index + 1)"; map.addAnnotation(pin)
                 }
             }
+            updatePublicData(map)
             let base=style+String(store.historicalImagery)+EarthObservation.day(store.imageryDate)
             if imageRevision != store.imageOverlayRevision || imageBase != base {
                 imageRevision=store.imageOverlayRevision; imageBase=base
@@ -220,11 +229,45 @@ struct MapCanvas: NSViewRepresentable {
             }
 
         }
+        func updatePublicData(_ map: MKMapView) {
+            guard publicDataRevision != store.publicDataRevision else { return }
+            publicDataRevision = store.publicDataRevision
+            map.removeOverlays(Array(publicDataOverlays.values)); publicDataOverlays.removeAll()
+            publicDataDrawn = store.publicDataFeatures
+            for kind in PublicDataKind.allCases {
+                let lines = publicDataDrawn.filter { $0.kind == kind }.flatMap(\.rings).compactMap { ring -> MKPolyline? in
+                    let coordinates = PublicDataGeometry.closed(ring).map(\.coordinate)
+                    guard coordinates.count > 1 else { return nil }
+                    return MKPolyline(coordinates: coordinates, count: coordinates.count)
+                }
+                guard !lines.isEmpty else { continue }
+                let overlay = MKMultiPolyline(lines)
+                publicDataOverlays[kind] = overlay
+                map.addOverlay(overlay, level: .aboveLabels)
+            }
+        }
+        func pickPublicData(at point: NSPoint, in map: MKMapView) -> Bool {
+            var closest: PublicDataFeature?, best: CGFloat = 36
+            for feature in publicDataDrawn {
+                for ring in feature.rings {
+                    let points = PublicDataGeometry.closed(ring).map { map.convert($0.coordinate, toPointTo: map) }
+                    for (a, b) in zip(points, points.dropFirst()) {
+                        let d = PublicDataGeometry.squaredDistance(point, to: a, b)
+                        if d < best { best = d; closest = feature }
+                    }
+                }
+            }
+            guard let closest else { return false }
+            store.showPublicDataDetails(closest); return true
+        }
         func add(_ points: [GeoPoint], polygon: Bool, color: NSColor, to map: MKMapView) {
             guard points.count > 1 else { return }
             let coordinates = points.map(\.coordinate)
             let overlay: MKOverlay = polygon ? MKPolygon(coordinates: coordinates, count: coordinates.count) : MKGeodesicPolyline(coordinates: coordinates, count: coordinates.count)
             colors[ObjectIdentifier(overlay)] = color; map.addOverlay(overlay)
+        }
+        func mapViewDidFinishRenderingMap(_ mapView: MKMapView, fullyRendered: Bool) {
+            if fullyRendered { DispatchQueue.main.async { [weak self] in self?.store.transitionImage = nil } }
         }
         func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
             guard !settingCamera, lastCamera != nil else { return }
@@ -241,6 +284,12 @@ struct MapCanvas: NSViewRepresentable {
             if overlay is EarthGroundImage { return EarthGroundImageRenderer(overlay:overlay) }
             if let tiles = overlay as? MKTileOverlay { return MKTileOverlayRenderer(tileOverlay: tiles) }
             let color = colors[ObjectIdentifier(overlay)] ?? .systemYellow
+            if let kind = publicDataOverlays.first(where: { $0.value === overlay as AnyObject })?.key,
+               let lines = overlay as? MKMultiPolyline {
+                let renderer = MKMultiPolylineRenderer(multiPolyline: lines)
+                renderer.strokeColor = NSColor(earthHex: PublicDataSource.source(kind).color).withAlphaComponent(store.publicDataOpacity[kind] ?? 0.9)
+                renderer.lineWidth = 1.5; return renderer
+            }
             if let lines = overlay as? MKMultiPolyline {
                 let renderer = MKMultiPolylineRenderer(multiPolyline: lines); renderer.strokeColor = color.withAlphaComponent(0.8); renderer.lineWidth = 1; return renderer
             }

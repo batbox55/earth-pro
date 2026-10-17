@@ -4,7 +4,71 @@ import MapKit
 import UniformTypeIdentifiers
 
 @MainActor final class EarthStore: ObservableObject {
-    @Published var historicalImagery = false { didSet { if !historicalImagery { stopHistoryPlayback() }; refreshArchive() } }
+    @Published var sidebarSection: SidebarSection = .places
+    @Published var folders: [EarthFolder] = []
+    @Published var selectedFolderID: UUID?
+    @Published var showFolderEditor = false
+    var foldersWritable = true
+    @Published var placeDataArea = "Current map view"
+    @Published var placeDataRegion: PlaceDataRegion?
+    @Published var discoveredData: [DiscoveredDataService] = []
+    @Published var discoveryStatus = ""
+    @Published var discoveryQuery = ""
+    @Published var discoveryLoading = false
+    @Published var discoveryFollowsMap = true
+    var discoveryManualCenter: GeoPoint?
+    var discoveryTask: Task<Void, Never>?
+    var discoveryGeneration = UUID()
+    var discoveryLastCenter: GeoPoint?
+    var discoveryLastLookup = Date.distantPast
+    @Published var showCustomData = false
+    @Published var showSourceDates = false
+    @Published var sourceFreshness: [String: SourceFreshness] = [:]
+    var sourceFreshnessTask: Task<Void, Never>?
+    @Published var customDataLayers: [CustomDataLayer] = []
+    @Published var customDataSnapshots: [UUID: [EarthFeature]] = [:]
+    @Published var customDataStatus: [UUID: String] = [:]
+    @Published var customDataLoading: Set<UUID> = []
+    @Published var customDataImporting = false
+    @Published var customDataImportError: String?
+    @Published var customDataLastImportedID: UUID?
+    var customDataTasks: [UUID: Task<Void, Never>] = [:]
+    var customDataSaveTask: Task<Void, Never>?
+    var customDataGenerations: [UUID: UUID] = [:]
+    var customDataWritable = true
+    @Published var showPublicData = false
+    @Published var publicDataEnabled: Set<PublicDataKind> = []
+    @Published var publicDataHidden: Set<PublicDataKind> = []
+    @Published var publicDataOpacity: [PublicDataKind: Double] = [:]
+    @Published var publicDataStatus: [PublicDataKind: String] = [:]
+    @Published var publicDataLoading: Set<PublicDataKind> = []
+    @Published var publicDataSnapshots: [PublicDataKind: PublicDataSnapshot] = [:]
+    @Published var publicDataRevision = UUID()
+    @Published var publicDataSelection: PublicDataFeature?
+    @Published var publicDataAttributes: [String: String] = [:]
+    @Published var publicDataDetailLoading = false
+    @Published var publicDataCounties: [PublicDataPortal] = []
+    var publicDataViewSize = CGSize(width: 1200, height: 800) { didSet { if oldValue != publicDataViewSize { refreshPublicData() } } }
+    var publicDataTask: Task<Void, Never>?
+    var publicDataDetailTask: Task<Void, Never>?
+    var publicDataSaveTask: Task<Void, Never>?
+    var publicDataGeneration = UUID()
+    var publicDataVisibilityKey = ""
+    var publicDataFetchScale: [PublicDataKind: Double] = [:]
+    var publicDataFetch: ((PublicDataKind, PublicDataBounds, Double) async throws -> PublicDataSnapshot)?
+    @Published var imageryTileRevision = UUID()
+    @Published var historyProduct: HistoryProduct = .modis { didSet { stopHistoryPlayback(); imageryDate = max(imageryDate, historyProduct.earliest); refreshArchive(); scheduleImageryMetadata() } }
+    @Published var waybackReleases: [WaybackRelease] = []
+    @Published var waybackReleaseID = "" { didSet { scheduleImageryMetadata() } }
+    @Published var waybackLoading = false
+    @Published var historyDates: [String] = []
+    @Published var historyCatalogStatus = "Select a source and date"
+    @Published var captureDate: String?
+    @Published var captureSource = ""
+    @Published var transitionImage: NSImage?
+    var imageryMetadataTask: Task<Void, Never>?
+    var historyCatalogTask: Task<Void, Never>?
+    @Published var historicalImagery = false { didSet { if !historicalImagery { stopHistoryPlayback() } else if mode == .map { pitch = 0; cameraRequest = UUID() }; refreshArchive() } }
     @Published var imageryDate = EarthObservation.latest { didSet { refreshArchive() } }
     @Published var historyPlaying = false
     @Published var historyStepDays = 30
@@ -44,6 +108,7 @@ import UniformTypeIdentifiers
     @Published var showLocalMCP=false
     @Published var mcpEnabled=false
     @Published var mcpStatus="Off"
+    var mcpPreferenceRestored = false
     var localMCP: EarthMCPServer?
     @Published var features: [EarthFeature] = []
     @Published var selection: UUID?
@@ -70,8 +135,14 @@ import UniformTypeIdentifiers
     @Published var googleReady = false
     @Published var googleError: String?
     @Published var googleQuery: (id: UUID, text: String)?
-    @Published var streetView = false
-    @Published var streetRequest = UUID()
+    @Published var streetView = false {
+        didSet { if !streetView { streetImageryDate = nil; streetImageryLoading = false } }
+    }
+    @Published var streetRequest = UUID() {
+        didSet { streetImageryDate = nil; streetImageryLoading = false }
+    }
+    @Published var streetImageryDate: String?
+    @Published var streetImageryLoading = false
     @Published var layers = EarthLayers() {
         didSet {
             if savesProviderPreference, let data = try? JSONEncoder().encode(layers) { UserDefaults.standard.set(data, forKey: "earthLayers") }
@@ -135,12 +206,12 @@ import UniformTypeIdentifiers
     private var undoHistory: [[EarthFeature]] = []
     private var redoHistory: [[EarthFeature]] = []
     let libraryURL: URL
-    private var writable = true
+    var writable = true
     private let savesProviderPreference: Bool
 
     var center: GeoPoint { .init(latitude: latitude, longitude: longitude) }
-    var selectedFeature: EarthFeature? { features.first { $0.id == selection } ?? (searchPin?.id == selection ? searchPin : nil) }
-    var renderedFeatures: [EarthFeature] { (showPlaces ? features.filter { $0.isVisible && $0.id != searchPin?.id } : []) + (searchPin.map { [$0] } ?? []) }
+    var selectedFeature: EarthFeature? { features.first { $0.id == selection } ?? (searchPin?.id == selection ? searchPin : nil) ?? customDataFeatures.first { $0.id == selection } }
+    var renderedFeatures: [EarthFeature] { (showPlaces ? features.filter { $0.isVisible && $0.id != searchPin?.id } : []) + (searchPin.map { [$0] } ?? []) + customDataFeatures }
     var drawingDistance: Double { GeoMath.length(vertices, closed: tool == .polygon) }
     var canFinish: Bool { vertices.count >= (tool == .polygon ? 3 : 2) }
     var canUndo: Bool { !undoHistory.isEmpty }
@@ -177,6 +248,17 @@ import UniformTypeIdentifiers
             features = []; writable = false
             self.error = "Your places could not be read at \(self.libraryURL.path). The existing file has been preserved. New work can be exported as KML. \(error.localizedDescription)"
         }
+        restorePublicDataSettings()
+        restoreCustomData()
+        restoreFolders()
+        if libraryURL == nil, let value = UserDefaults.standard.string(forKey: "earthSidebarSection"), let section = SidebarSection(rawValue: value) {
+            sidebarSection = section; showPublicData = section == .data
+        }
+    }
+
+    func setSidebarSection(_ section: SidebarSection) {
+        sidebarSection = section; showPublicData = section == .data
+        if savesProviderPreference { UserDefaults.standard.set(section.rawValue, forKey: "earthSidebarSection") }
     }
 
     func restoreGoogleSession() {
@@ -268,6 +350,7 @@ import UniformTypeIdentifiers
     func save(_ feature: EarthFeature) {
         var feature = feature; feature.name = feature.name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard feature.isValid else { error = "A name and valid coordinates are required."; return }
+        if feature.folderID == nil, !features.contains(where: { $0.id == feature.id }) { feature.folderID = selectedFolderID }
         remember()
         if let i = features.firstIndex(where: { $0.id == feature.id }) { features[i] = feature } else { features.append(feature) }
         if searchPin?.id == feature.id { searchPin = nil }
@@ -303,25 +386,27 @@ import UniformTypeIdentifiers
         else { distance = min(distance, 4_000_000) }
         cameraRequest = UUID()
     }
-    func fly(to point: GeoPoint, distance: Double = 15_000, detail: Bool = true) {
+    func fly(to point: GeoPoint, distance: Double = 15_000, detail: Bool = true, interruptTour: Bool = true) {
+        guard point.isValid else { error = "This place has invalid coordinates."; return }
+        if interruptTour { stopTour() }; cancelTool(); cursorPoint = nil
+        if detail, mode == .globe { transitionImage = globeSnapshot?() }
         streetView = false; streetRequest = UUID()
         latitude = max(-85, min(85, point.latitude)); longitude = GeoMath.normalizedLongitude(point.longitude)
         self.distance = max(100, min(40_000_000, distance)); heading = 0
-        if detail { mode = .map; pitch = terrain && provider != .openStreetMap && distance < 100_000 ? 45 : 0 }
+        if detail { mode = .map; pitch = terrain && !historicalImagery && provider != .openStreetMap && distance < 100_000 ? 45 : 0 }
         cameraRequest = UUID(); status = point.label
     }
-    func fly(to feature: EarthFeature) {
+    func fly(to feature: EarthFeature, interruptTour: Bool = true) {
+        guard let frame = GeoMath.framing(feature.points) else { error = "This place has no valid coordinates."; return }
         selection = feature.id
-        let range = max(5_000, feature.points.map { GeoMath.distance(feature.center, $0) }.max() ?? 0) * 2.4
-        fly(to: feature.center, distance: range)
+        fly(to: frame.center, distance: frame.distance, interruptTour: interruptTour)
         status = feature.name
     }
     func home() { stopTour(); cancelTool(); streetView = false; streetRequest = UUID(); latitude = 22; longitude = -95; distance = 16_000_000; heading = 0; pitch = 0; mode = .globe; cameraRequest = UUID(); status = "Earth · Drag to explore" }
     func zoom(_ factor: Double) {
         guard factor.isFinite, factor > 0 else { return }
         distance = max(150, min(45_000_000, distance * factor))
-        if mode == .globe, distance < 2_500_000 { mode = .map }
-        if mode == .map, distance > 9_000_000 { mode = .globe }
+        // A tiled globe now remains detailed at close range; zoom never replaces its renderer.
         cameraRequest = UUID()
     }
     func navigationZoom(_ factor: Double, anchor: GeoPoint? = nil, automaticallyTilt: Bool = false) {
@@ -495,6 +580,7 @@ import UniformTypeIdentifiers
     }
     func importURLs(_ urls: [URL]) {
         guard !busy else { return }; busy = true; status = "Importing places…"
+        let destinationFolder = selectedFolderID
         Task {
             let result = await Task.detached { () -> Result<KMLImport, Error> in
                 do {
@@ -509,7 +595,9 @@ import UniformTypeIdentifiers
             busy = false
             switch result {
             case .success(let imported):
-                remember(); features += imported.features; persist()
+                remember(); features += imported.features.map { feature in
+                    var feature = feature; feature.folderID = folders.contains(where: { $0.id == destinationFolder }) ? destinationFolder : nil; return feature
+                }; persist()
                 if let first = imported.features.first { fly(to: first) }
                 status = "Imported \(imported.features.count) places" + (imported.skipped > 0 ? " · Skipped \(imported.skipped) unsupported or invalid items" : "")
                 if !imported.warnings.isEmpty { error = imported.warnings.joined(separator: "\n") }
@@ -548,7 +636,7 @@ import UniformTypeIdentifiers
         tourTask = Task { [weak self] in
             for place in places {
                 guard !Task.isCancelled, let self else { return }
-                self.fly(to: place); self.status = "Tour · \(place.name)"
+                self.fly(to: place, interruptTour: false); self.status = "Tour · \(place.name)"
                 do { try await Task.sleep(for: .seconds(4)) } catch { return }
             }
             self?.touring = false
@@ -569,6 +657,15 @@ import UniformTypeIdentifiers
             }
             return "Google photorealistic buildings + terrain · Coverage varies. Terrain is part of the 3D imagery; cloud and traffic overlays require 2D."
         }
+    }
+    func restoreDefaultLayers() {
+        layers = EarthLayers()
+        terrain = true
+        grid = false
+        showPlaces = true
+        google3DActive = false
+        google3DError = nil
+        cameraRequest = UUID()
     }
     func setBuildingsLayer(_ value: Bool) {
         if value && provider == .openStreetMap { status = buildingsLayerDescription; return }
@@ -672,43 +769,55 @@ import UniformTypeIdentifiers
 
 @MainActor extension EarthStore {
     var observationPoint: GeoPoint { cursorPoint ?? center }
-    var imageryInformation: String {
-        if historicalImagery {
-            let prefix = mode == .globe && archiveLoadedDate != EarthObservation.day(imageryDate) ? "Imagery requested: " : "Imagery: "
-            return prefix + "NASA MODIS · " + EarthObservation.day(imageryDate) + " (UTC)"
+    var showingStreetImagery: Bool { mode == .map && provider == .google && streetView }
+    func updateStreetImagery(date: String?, loading: Bool, request: String?) {
+        guard showingStreetImagery, request == streetRequest.uuidString else { return }
+        streetImageryLoading = loading
+        streetImageryDate = !loading && date?.range(of: #"^[0-9]{4}(-(0[1-9]|1[0-2]))?$"#, options: .regularExpression) != nil ? date : nil
+    }
+    var imageryDateLabel: String {
+        if showingStreetImagery {
+            return "Street View date: " + (streetImageryDate ?? (streetImageryLoading ? "Loading…" : "Not supplied"))
         }
-        if mode == .globe { return "Imagery: NASA Blue Marble · Composite" }
+        if historicalImagery, historyProduct == .wayback {
+            return "Captured: " + (captureDate ?? "Not supplied")
+        }
+        if historicalImagery {
+            return "Imagery day: \(EarthObservation.day(imageryDate)) UTC"
+        }
+        if mode == .globe { return "Imagery date: Not supplied" }
+        if provider == .openStreetMap || (mapStyle == .streets && !google3DActive) {
+            return "Imagery date: N/A"
+        }
+        return "Imagery date: Not supplied"
+    }
+    var imageryDateHelp: String {
+        if showingStreetImagery {
+            return "Capture month or year supplied by Google for the panorama currently displayed. Updates as you move through Street View; some panoramas have no date. This is not the satellite map's acquisition date."
+        }
+        if historicalImagery {
+            if historyProduct == .wayback { return "Image capture date at this location and approximate view scale. Basemap release: \(selectedWayback?.date ?? "unavailable"). \(captureSource). Release dates are not capture dates; some locations have no metadata." }
+            return "NASA observation day (UTC), not an exact acquisition time at the pointer. Clouds and coverage gaps may show underlying imagery. Use Available dates to find observations near the view center."
+        }
+        if mode == .globe { return "Esri imagery streams at increasing detail. Capture dates are not supplied by the current basemap; use Wayback for location-specific capture metadata. NASA Blue Marble is the offline composite fallback." }
+        return "This provider does not expose imagery acquisition dates at the pointer through the map API. Copyright years are not imagery dates."
+    }
+    var imageryInformation: String {
+        if showingStreetImagery { return "Imagery: Google Street View" }
+        if historicalImagery {
+            return historyAttribution
+        }
+        if mode == .globe { return "Imagery: Esri tiled imagery · NASA composite fallback" }
         if provider == .google && google3DActive { return "Imagery: Google photorealistic 3D · Acquisition date not supplied" }
         if provider == .openStreetMap || mapStyle == .streets { return "Imagery: Street map · Date not supplied" }
         return "Imagery: \(provider.rawValue) · Acquisition date not supplied"
     }
     var eyeAltitudeLabel: String { "Eye alt ≈ " + formatDistance(EarthObservation.eyeAltitude(distance: distance, pitch: pitch)) }
     func refreshArchive() {
-        archiveTask?.cancel(); archiveTask = nil; archiveGeneration = UUID()
+        archiveTask?.cancel(); archiveTask = nil; archiveGeneration = UUID(); imageryTileRevision = UUID()
         archiveImage = nil; archiveLoadedDate = nil; archiveLoading = false
-        guard historicalImagery, mode == .globe else { return }
-        let date = imageryDate, generation = archiveGeneration, key = EarthObservation.day(imageryDate)
-        if let cached = archiveCache[key] {
-            archiveImage = cached; archiveLoadedDate = key; archiveStatus = "NASA Terra / MODIS · " + key + " · Cached observation"; return
-        }
-        archiveLoading = true
-        archiveStatus = "Loading NASA imagery for " + EarthObservation.day(date) + "…"
-        archiveTask = Task { [weak self] in
-            defer { if self?.archiveGeneration == generation { self?.archiveLoading = false } }
-            do {
-                try await Task.sleep(for: .milliseconds(350))
-                let data = try await EarthLayerService.request(EarthObservation.archiveURL(date: date, bbox: "-180,-90,180,90", mercator: false, width: 2048, height: 1024), timeout: 60)
-                guard !Task.isCancelled, let self, self.archiveGeneration == generation else { return }
-                guard let image = NSImage(data: data) else { throw URLError(.cannotDecodeContentData) }
-                guard EarthObservation.hasCoverage(data) else {
-                    self.archiveStatus = "No NASA imagery for this date · Select an earlier date"; return
-                }
-                self.archiveCache[key] = image; self.archiveCacheOrder.removeAll { $0 == key }; self.archiveCacheOrder.append(key)
-                if self.archiveCacheOrder.count > 6 { self.archiveCache.removeValue(forKey: self.archiveCacheOrder.removeFirst()) }
-                self.archiveImage = image; self.archiveLoadedDate = key
-                self.archiveStatus = "NASA Terra / MODIS · " + EarthObservation.day(date) + " · Daily swaths"
-            } catch { if !Task.isCancelled { self?.archiveStatus = "NASA imagery unavailable · " + error.localizedDescription + " · Retry or select another date" } }
-        }
+        archiveStatus = "Imagery loads as visible tiles; missing coverage shows the base globe/map"
+        findHistoryDates(); scheduleImageryMetadata()
     }
     func updateElevation() {
         elevationTask?.cancel(); elevationTask = nil
@@ -733,11 +842,12 @@ import UniformTypeIdentifiers
         }
     }
     private func elevationLabel(_ meters: Double) -> String { String(format: "Elev ≈ %.0f %@", miles ? meters * 3.28084 : meters, miles ? "ft" : "m") }
-    func stepImagery(days: Int) { stopHistoryPlayback(); if !historicalImagery { historicalImagery = true }; imageryDate = max(EarthObservation.earliest, min(EarthObservation.latest, imageryDate.addingTimeInterval(Double(days) * 86400))) }
+    func stepImagery(days: Int) { stopHistoryPlayback(); if !historicalImagery { historicalImagery = true }; imageryDate = max(historyProduct.earliest, min(EarthObservation.latest, imageryDate.addingTimeInterval(Double(days) * 86400))) }
     func toggleHistoryPlayback() {
         if historyPlaying { stopHistoryPlayback(); return }
         historicalImagery = true
-        if imageryDate >= EarthObservation.latest { imageryDate = max(EarthObservation.earliest, EarthObservation.latest.addingTimeInterval(-Double(historyStepDays) * 86400 * 12)) }
+        guard historyProduct != .wayback else { return }
+        if imageryDate >= EarthObservation.latest { imageryDate = max(historyProduct.earliest, EarthObservation.latest.addingTimeInterval(-Double(historyStepDays) * 86400 * 12)) }
         historyPlaying = true
         historyTimer = Timer(timeInterval: 3, repeats: true) { [weak self] timer in
             MainActor.assumeIsolated {

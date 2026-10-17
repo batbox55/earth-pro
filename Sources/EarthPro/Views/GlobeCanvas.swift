@@ -19,6 +19,7 @@ final class InteractiveGlobe: SCNView {
     private var lastCoastTick = 0.0
     private var motionRequest: UUID?
     var renderCamera: (() -> Void)?
+    var pickPublicData: ((NSPoint) -> Bool)?
     deinit { coast?.invalidate() }
     func interruptMotion() { coast?.invalidate(); coast = nil; velocity = .zero }
     private func apply(_ rotation: simd_quatd) {
@@ -101,6 +102,7 @@ final class InteractiveGlobe: SCNView {
            name.hasPrefix("feature:"), let id = UUID(uuidString: String(name.dropFirst(8))) {
             store.selection = id; return
         }
+        if !moved, store?.tool == .navigate, pickPublicData?(convert(event.locationInWindow, from: nil)) == true { return }
         guard !moved, let store, let point = earthPoint(at: convert(event.locationInWindow, from: nil)) else { return }
         store.pick(point)
     }
@@ -115,6 +117,10 @@ struct GlobeCanvas: NSViewRepresentable {
         let input = EarthNavigationInput(view: view, store: store)
         view.renderCamera = { [weak coordinator = context.coordinator, weak view] in
             if let view { coordinator?.update(view) }
+        }
+        view.pickPublicData = { [weak coordinator = context.coordinator, weak view] point in
+            guard let view else { return false }
+            return coordinator?.pickPublicData(at: point, in: view) ?? false
         }
         input.renderCamera = view.renderCamera
         input.interruptMotion = { [weak view] in view?.interruptMotion() }
@@ -148,6 +154,12 @@ struct GlobeCanvas: NSViewRepresentable {
         let store: EarthStore
         let scene = SCNScene(), camera = SCNNode(), overlay = SCNNode(), grid = SCNNode()
         let imageGround = SCNNode()
+        let publicDataRoot = SCNNode()
+        var publicDataRevision: UUID?
+        var publicDataTerrain: Bool?
+        var publicDataSegments: [(PublicDataFeature, [SCNVector3])] = []
+        var publicDataBuild: Task<[(PublicDataFeature, [SCNVector3])], Never>?
+        let imageryTiles = GlobeImageryTiles()
         var lastImages: UUID?
         var lastImageTerrain: Bool?
         let earth = SCNNode(), parks = SCNNode()
@@ -164,13 +176,22 @@ struct GlobeCanvas: NSViewRepresentable {
         var input: EarthNavigationInput?
         var lastCamera: UUID?
         var drawn: [EarthFeature] = [], vertices: [GeoPoint] = []
+        var lastCustomTerrain: Bool?
         var lastSelection: UUID?
         var lastTool: EarthTool = .navigate
         init(_ store: EarthStore) {
             self.store = store
+            imageryTiles.report = { [weak store] text in
+                DispatchQueue.main.async {
+                    guard let store, store.mode == .globe, store.historicalImagery else { return }
+                    store.archiveStatus = text; store.archiveLoading = text == "Refining imagery…"
+                }
+            }
             camera.camera = SCNCamera(); camera.camera?.fieldOfView = 38; camera.camera?.zNear = 0.01; camera.camera?.zFar = 200
             scene.rootNode.addChildNode(camera)
-            earth.geometry = flatEarth; earth.name = "earth"; earth.renderingOrder = -2
+            scene.rootNode.addChildNode(imageryTiles.root)
+            scene.rootNode.addChildNode(publicDataRoot)
+            earth.geometry = flatEarth; earth.name = "earth"; earth.renderingOrder = -200
             let material = SCNMaterial(); material.lightingModel = .constant
             if let url = Bundle.module.url(forResource: "earth", withExtension: "png") { material.diffuse.contents = NSImage(contentsOf: url) }
             else { material.diffuse.contents = NSColor.systemBlue }
@@ -267,13 +288,15 @@ struct GlobeCanvas: NSViewRepresentable {
             }
             grid.addChildNode(lineNode(lines, color: NSColor.white.withAlphaComponent(0.25), radius: 1.002))
         }
-        func lineNode(_ segments: [GeoPoint], color: NSColor, radius: Float = 1.005) -> SCNNode {
-            let points = segments.map { spherePosition($0, radius: radius) }
+        func lineNode(_ segments: [GeoPoint], color: NSColor, radius: Float = 1.005, grounded: Bool = false) -> SCNNode {
+            let points = segments.map { point in
+                spherePosition(point, radius: grounded ? Float(1 + ((store.terrain ? EarthTerrain.elevation(point) : 0) + 3) / GeoMath.radius) : radius)
+            }
             let geometry = SCNGeometry(sources: [.init(vertices: points)], elements: [.init(indices: Array(0..<Int32(points.count)), primitiveType: .line)])
             let material = SCNMaterial(); material.lightingModel = .constant; material.diffuse.contents = color; material.isDoubleSided = true
             geometry.materials = [material]; return SCNNode(geometry: geometry)
         }
-        func draw(_ feature: EarthFeature) {
+        func draw(_ feature: EarthFeature, grounded: Bool = false) {
             let color = NSColor(earthHex: feature.color)
             if feature.kind == .point {
                 let node = SCNNode()
@@ -306,7 +329,7 @@ struct GlobeCanvas: NSViewRepresentable {
                         segments += [.init(latitude: a.latitude + (b.latitude - a.latitude) * t1, longitude: a.longitude + dl * t1), .init(latitude: a.latitude + (b.latitude - a.latitude) * t2, longitude: a.longitude + dl * t2)]
                     }
                 }
-                overlay.addChildNode(lineNode(segments, color: color))
+                overlay.addChildNode(lineNode(segments, color: color, grounded: grounded))
             }
         }
         func labelNode(_ title: String, at point: GeoPoint, color: NSColor) -> SCNNode {
@@ -378,19 +401,85 @@ struct GlobeCanvas: NSViewRepresentable {
                 node.isHidden = (item.kind == .park || item.kind == .airport) && (store.distance > 6_000_000 || GeoMath.distance(store.center, item.point) > store.distance)
             }
         }
+        func updatePublicData() {
+            guard publicDataRevision != store.publicDataRevision || publicDataTerrain != store.terrain else { return }
+            publicDataRevision = store.publicDataRevision; publicDataTerrain = store.terrain
+            publicDataRoot.childNodes.forEach { $0.removeFromParentNode() }; publicDataSegments.removeAll()
+            publicDataBuild?.cancel()
+            let features = store.publicDataFeatures, terrain = store.terrain, revision = store.publicDataRevision
+            let build = Task.detached(priority: .utility) { () -> [(PublicDataFeature, [SCNVector3])] in
+                var result: [(PublicDataFeature, [SCNVector3])] = []
+                for feature in features {
+                    guard !Task.isCancelled else { return [] }
+                    var segments: [SCNVector3] = []
+                    for ring in feature.rings {
+                        let points = PublicDataGeometry.closed(ring).map { point in
+                            let elevation = terrain ? EarthTerrain.elevation(point) : 0
+                            return spherePosition(point, radius: Float(1 + (elevation + 3) / GeoMath.radius))
+                        }
+                        for (a, b) in zip(points, points.dropFirst()) { segments += [a, b] }
+                    }
+                    result.append((feature, segments))
+                }
+                return result
+            }
+            publicDataBuild = build
+            Task { [weak self] in
+                let segments = await build.value
+                guard let self, !build.isCancelled, self.publicDataRevision == revision, self.publicDataTerrain == terrain else { return }
+                self.publicDataSegments = segments
+                self.publicDataBuild = nil
+                for kind in PublicDataKind.allCases {
+                    let positions = segments.filter { $0.0.kind == kind }.flatMap { $0.1 }
+                    guard !positions.isEmpty else { continue }
+                    let geometry = SCNGeometry(sources: [.init(vertices: positions)], elements: [.init(indices: Array(0..<Int32(positions.count)), primitiveType: .line)])
+                    let material = SCNMaterial(); material.lightingModel = .constant
+                    material.diffuse.contents = NSColor(earthHex: PublicDataSource.source(kind).color).withAlphaComponent(self.store.publicDataOpacity[kind] ?? 0.9)
+                    material.writesToDepthBuffer = false; material.isDoubleSided = true
+                    geometry.materials = [material]
+                    let node = SCNNode(geometry: geometry); node.renderingOrder = 10
+                    self.publicDataRoot.addChildNode(node)
+                }
+            }
+        }
+        func pickPublicData(at point: NSPoint, in view: SCNView) -> Bool {
+            var closest: PublicDataFeature?, best: CGFloat = 36
+            let camera = camera.presentation.simdWorldPosition
+            for (feature, segments) in publicDataSegments where segments.count > 1 {
+                for index in stride(from: 0, to: segments.count - 1, by: 2) {
+                    let a = segments[index], b = segments[index + 1]
+                    let normal = SIMD3<Float>(Float(a.x), Float(a.y), Float(a.z))
+                    guard simd_dot(normal, camera - normal) > 0 else { continue }
+                    let pa = view.projectPoint(a), pb = view.projectPoint(b)
+                    guard (0...1).contains(pa.z), (0...1).contains(pb.z) else { continue }
+                    let distance = PublicDataGeometry.squaredDistance(point, to: CGPoint(x: CGFloat(pa.x), y: CGFloat(pa.y)), CGPoint(x: CGFloat(pb.x), y: CGFloat(pb.y)))
+                    if distance < best { best = distance; closest = feature }
+                }
+            }
+            guard let closest else { return false }
+            store.showPublicDataDetails(closest); return true
+        }
         func update(_ view: InteractiveGlobe) {
+            if store.publicDataViewSize != view.bounds.size {
+                let size = view.bounds.size
+                DispatchQueue.main.async { [weak store] in if size.width > 1 && size.height > 1 { store?.publicDataViewSize = size } }
+            }
+            updatePublicData()
             if lastCamera != store.cameraRequest {
                 let initial = lastCamera == nil; lastCamera = store.cameraRequest
                 SCNTransaction.begin(); SCNTransaction.animationDuration = initial || view.dragging || store.navigationIsActive ? 0 : 0.6
-                let target = spherePosition(store.center)
+                let surfaceRadius = Float(1 + (store.terrain ? EarthTerrain.elevation(store.center) / GeoMath.radius : 0))
+                let target = spherePosition(store.center, radius: surfaceRadius)
                 let lat = Float(store.latitude * .pi / 180), lon = Float(store.longitude * .pi / 180)
                 let h = Float(store.heading * .pi / 180), p = Float(store.pitch * .pi / 180)
                 let north = SIMD3<Float>(-sin(lat) * sin(lon), cos(lat), -sin(lat) * cos(lon))
                 let east = SIMD3<Float>(cos(lon), 0, -sin(lon))
-                let radial = SIMD3<Float>(Float(target.x), Float(target.y), Float(target.z))
+                let targetPosition = SIMD3<Float>(Float(target.x), Float(target.y), Float(target.z))
+                let radial = simd_normalize(targetPosition)
                 let forward = north * cos(h) + east * sin(h)
                 let range = Float(store.distance / GeoMath.radius)
-                camera.simdPosition = radial + range * (radial * cos(p) - forward * sin(p))
+                camera.camera?.zNear = max(0.0000001, min(0.01, Double(range) * 0.01))
+                camera.simdPosition = targetPosition + range * (radial * cos(p) - forward * sin(p))
                 let up = radial * sin(p) + forward * cos(p)
                 camera.look(at: target, up: SCNVector3(up.x, up.y, up.z), localFront: SCNVector3(0, 0, -1))
                 SCNTransaction.commit()
@@ -401,13 +490,18 @@ struct GlobeCanvas: NSViewRepresentable {
                 imageGround.childNodes.forEach{$0.removeFromParentNode()}
                 for item in store.imageOverlays where item.isVisible { if let node=item.globeNode(terrain:store.terrain) { imageGround.addChildNode(node) } }
             }
+            if store.mode == .globe, view.bounds.width > 1, view.bounds.height > 1, let source = store.activeGlobeImagery {
+                imageryTiles.update(source: source, revision: store.imageryTileRevision, center: store.center, distance: store.distance, pitch: store.pitch, size: view.bounds.size, terrain: store.terrain)
+            }
             updateLayers(view)
             grid.isHidden = !store.grid || !store.layers.primary
             let visible = store.renderedFeatures
-            if drawn != visible || vertices != store.vertices || lastSelection != store.selection || lastTool != store.tool {
+            if drawn != visible || vertices != store.vertices || lastSelection != store.selection || lastTool != store.tool || lastCustomTerrain != store.terrain {
+                lastCustomTerrain = store.terrain
                 drawn = visible; vertices = store.vertices; lastSelection = store.selection; lastTool = store.tool
                 overlay.childNodes.forEach { $0.removeFromParentNode() }
-                visible.forEach(draw)
+                let customIDs = Set(store.customDataFeatures.map(\.id))
+                visible.forEach { draw($0, grounded: customIDs.contains($0.id)) }
                 if !store.vertices.isEmpty {
                     draw(.init(name: "Drawing", kind: store.tool == .polygon && store.vertices.count > 2 ? .polygon : .path, points: store.vertices))
                     for point in store.vertices { draw(.init(name: "Vertex", kind: .point, points: [point])) }

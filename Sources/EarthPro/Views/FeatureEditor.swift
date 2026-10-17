@@ -18,6 +18,7 @@ struct FeatureEditor: View {
             Label(feature.kind.title, systemImage: feature.kind.icon).font(.title2)
             Form {
                 TextField("Name", text: $feature.name)
+                EarthFolderPicker(store: store, selection: $feature.folderID)
                 if feature.kind == .point {
                     TextField("Latitude", text: $latitude)
                     TextField("Longitude", text: $longitude)
@@ -29,8 +30,8 @@ struct FeatureEditor: View {
                 }
             }.textFieldStyle(.roundedBorder)
             VStack(alignment: .leading, spacing: 6) {
-                Text("Description").font(.caption).foregroundStyle(.secondary)
-                TextEditor(text: $feature.notes).font(.body).frame(height: 95).padding(5).overlay(RoundedRectangle(cornerRadius: 5).stroke(.quaternary))
+                Text("Notes").font(.caption).foregroundStyle(.secondary)
+                TextEditor(text: $feature.notes).accessibilityLabel("Location notes").font(.body).frame(height: 95).padding(5).overlay(RoundedRectangle(cornerRadius: 5).stroke(.quaternary))
             }
             HStack(spacing: 12) {
                 Text("Color").font(.caption).foregroundStyle(.secondary)

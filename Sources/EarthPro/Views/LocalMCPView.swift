@@ -22,7 +22,7 @@ struct LocalMCPView: View {
             Toggle("Allow local LLM control",isOn:Binding(get:{store.mcpEnabled},set:{store.setMCPEnabled($0)})).toggleStyle(.switch)
             Text(store.mcpStatus).font(.callout).textSelection(.enabled)
             Text("When enabled, a local MCP client can navigate, get search suggestions, choose results, customize and manage pins, plot address lists, toggle layers, add shapes and image overlays, and start or stop video recording. Your Google API key is never returned to the client.").fixedSize(horizontal:false,vertical:true)
-            Text("Off by default on every launch. Listens only on 127.0.0.1. Switching off closes connections and revokes this session’s token.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
+            Text("Starts with Earth Pro by default and remembers your on/off choice. Listens only on 127.0.0.1. Switching off closes connections and revokes this session’s token.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
             if store.mcpEnabled,let server=store.localMCP {
                 Text("Add this Streamable HTTP connection to your MCP client:").font(.headline)
                 Text(server.endpoint).font(.system(.body,design:.monospaced)).textSelection(.enabled)

@@ -28,6 +28,7 @@ struct NavigationHoldControl: NSViewRepresentable {
     private var moved = false
     private var timer: Timer?
     private var lastTick = 0.0
+    private var appliedSeconds = 0.0
     private var request: UUID?
     private var mode: ViewMode?
     private var provider: MapProvider?
@@ -35,7 +36,7 @@ struct NavigationHoldControl: NSViewRepresentable {
     override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); if window == nil { stop() } }
     override func mouseDown(with event: NSEvent) {
         guard let store else { return }
-        stop(); store.stopTour(); vector = fixedVector; moved = false
+        stop(); store.stopTour(); vector = fixedVector; moved = false; appliedSeconds = 0
         start = convert(event.locationInWindow, from: nil); request = store.cameraRequest; mode = store.mode; provider = store.provider
         lastTick = ProcessInfo.processInfo.systemUptime; highlight(true)
         advance(seconds: 1 / 60)
@@ -51,8 +52,12 @@ struct NavigationHoldControl: NSViewRepresentable {
         vector = length < 0.12 ? .zero : delta / max(1, length)
     }
     override func mouseUp(with event: NSEvent) {
+        guard let store, request == store.cameraRequest, mode == store.mode, provider == store.provider else { stop(); return }
         let reset = fixedVector == .zero && !moved && look
-        stop(); if reset { store?.setPitch(0) }
+        // A short physical click should match the accessible press, regardless of
+        // how many timer callbacks AppKit delivered before the mouse was released.
+        if fixedVector != .zero, appliedSeconds < 0.16 { advance(seconds: 0.16 - appliedSeconds) }
+        stop(); if reset { store.setPitch(0) }
     }
     override func accessibilityPerformPress() -> Bool {
         guard let store else { return false }
@@ -67,7 +72,10 @@ struct NavigationHoldControl: NSViewRepresentable {
     }
     private func advance(seconds: Double) {
         guard let store else { return }
-        if vector != .zero { store.navigationPad(look: look, x: vector.x, y: vector.y, seconds: seconds); request = store.cameraRequest }
+        if vector != .zero {
+            store.navigationPad(look: look, x: vector.x, y: vector.y, seconds: seconds)
+            appliedSeconds += seconds; request = store.cameraRequest
+        }
     }
-    func stop() { timer?.invalidate(); timer = nil; highlight(false) }
+    func stop() { timer?.invalidate(); timer = nil; request = nil; mode = nil; provider = nil; vector = .zero; highlight(false) }
 }

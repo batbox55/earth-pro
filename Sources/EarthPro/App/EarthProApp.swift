@@ -84,6 +84,7 @@ import AppKit
                 Button("Path") { store.begin(.path) }
                 Button("Polygon") { store.begin(.polygon) }
                 Button("Image Overlay…") { store.importImageOverlay() }
+                Button("Custom Data Layer…") { store.showCustomData = true }
             }
             CommandMenu("Explore") {
                 Button("Home") { store.home() }.keyboardShortcut("h", modifiers: [.command, .shift])

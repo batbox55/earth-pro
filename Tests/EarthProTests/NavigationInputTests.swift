@@ -128,6 +128,55 @@ final class NavigationInputTests: XCTestCase {
         XCTAssertEqual(store.center, released)
         XCTAssertTrue(button.accessibilityPerformPress()); XCTAssertNotEqual(store.center, released)
     }
+    @MainActor func testLookArrowQuickClickHasUsefulStepAndCancellationDoesNotResetTilt() {
+        let (window, surface, store, _, event) = fixture()
+        defer { window.close() }
+        let button = NavigationHoldButton(frame: NSRect(x: 0, y: 0, width: 28, height: 28))
+        surface.addSubview(button); button.store = store; button.look = true; button.fixedVector = .init(1, 0)
+        let heading = store.heading
+        button.mouseDown(with: event); button.mouseUp(with: event)
+        XCTAssertGreaterThanOrEqual(store.heading - heading, 5, "A quick click must make a visible heading step, not depend on timer delivery")
+        button.fixedVector = .zero
+        button.mouseDown(with: event)
+        store.setPitch(45) // Another camera action takes over while the button is held.
+        button.mouseUp(with: event)
+        XCTAssertEqual(store.pitch, 45, "An interrupted center press must not reset the new camera")
+    }
+    @MainActor func testLookArrowsRepeatSmoothlyAndStopOnRelease() {
+        let (window, surface, store, _, event) = fixture()
+        defer { window.close() }
+        let button = NavigationHoldButton(frame: NSRect(x: 0, y: 0, width: 24, height: 24))
+        surface.addSubview(button); button.store = store; button.look = true
+        for direction in [SIMD2<Double>(1, 0), .init(-1, 0), .init(0, 1), .init(0, -1)] {
+            store.heading = 180; store.pitch = 40
+            button.fixedVector = direction
+            button.mouseDown(with: event); button.mouseUp(with: event)
+            XCTAssertEqual(store.heading, 180 + direction.x * 7.2, accuracy: 0.001)
+            XCTAssertEqual(store.pitch, 40 + direction.y * 4.8, accuracy: 0.001)
+        }
+        button.fixedVector = .init(1, 0)
+        button.mouseDown(with: event)
+        let first = store.heading
+        RunLoop.main.run(until: Date().addingTimeInterval(0.08))
+        XCTAssertGreaterThan(store.heading, first, "Holding must keep moving without further mouse events")
+        button.mouseUp(with: event)
+        let released = store.heading
+        RunLoop.main.run(until: Date().addingTimeInterval(0.04))
+        XCTAssertEqual(store.heading, released)
+        button.mouseUp(with: event)
+        XCTAssertEqual(store.heading, released, "A second release must not add another step")
+    }
+    @MainActor func testLargerCompassLeavesArrowTargetsToThePad() {
+        let (window, _, store, _, _) = fixture()
+        defer { window.close() }
+        let compass = EarthCompassView(frame: NSRect(x: 0, y: 0, width: 96, height: 96))
+        window.contentView!.addSubview(compass); compass.store = store
+        for offset in [NSPoint(x: 12, y: 36), NSPoint(x: -12, y: -36), NSPoint(x: 36, y: 12), NSPoint(x: -36, y: -12)] {
+            XCTAssertNil(compass.hitTest(NSPoint(x: 48 + offset.x, y: 48 + offset.y)))
+        }
+        XCTAssertTrue(compass.hitTest(NSPoint(x: 48, y: 6)) === compass)
+        XCTAssertTrue(compass.hitTest(NSPoint(x: 48 + 42 / sqrt(2), y: 48 + 42 / sqrt(2))) === compass)
+    }
     @MainActor func testWheelPinchAndRotationAreConsumedOnceAndRespectOption() {
         let (window, _, store, input, event) = fixture()
         defer { window.close() }
@@ -282,4 +331,16 @@ final class NavigationInputTests: XCTestCase {
         event.kind = .scrollWheel; event.momentum = .changed
         XCTAssertNil(input.handle(event)); XCTAssertEqual(store.distance, 10_000)
     }
+    @MainActor func testOverlayReleaseCannotInspectGeometryBehindIt() {
+        let (window, _, _, input, event) = fixture()
+        defer { window.close() }
+        var picks = 0; input.pickLayerAt = { _ in picks += 1; return true }
+        event.kind = .leftMouseDown; _ = input.handle(event)
+        let panel = NSTextField(frame: NSRect(x: 200, y: 200, width: 100, height: 100))
+        window.contentView!.addSubview(panel)
+        event.kind = .leftMouseUp
+        XCTAssertTrue(input.handle(event) === event)
+        XCTAssertEqual(picks, 0)
+    }
+
 }

@@ -179,11 +179,11 @@ final class EarthTests: XCTestCase {
         XCTAssertLessThan(normal, 1); XCTAssertGreaterThan(fine, normal); XCTAssertLessThan(fine, 1)
         XCTAssertGreaterThan(EarthNavigation.zoomFactor(delta: -3, precise: true, fine: false), 1)
     }
-    @MainActor func testNavigationZoomAnchoringAndContinuousViewTransition() {
+    @MainActor func testNavigationZoomAnchoringKeepsTiledGlobe() {
         let store = EarthStore(libraryURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
         store.latitude = 0; store.longitude = 179; store.distance = 2_600_000
         store.navigationZoom(0.9, anchor: .init(latitude: 10, longitude: -179))
-        XCTAssertEqual(store.mode, .map)
+        XCTAssertEqual(store.mode, .globe)
         XCTAssertEqual(store.distance, 2_340_000, accuracy: 0.1)
         XCTAssertEqual(store.latitude, 1, accuracy: 0.001)
         XCTAssertEqual(store.longitude, 179.2, accuracy: 0.001)

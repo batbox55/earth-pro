@@ -35,7 +35,7 @@ struct EarthCompassControl: NSViewRepresentable {
     override func draw(_ dirtyRect: NSRect) {
         let angle = -heading * .pi / 180, radius = min(bounds.width, bounds.height) / 2 - 6
         let point = NSPoint(x: bounds.midX + sin(angle) * radius, y: bounds.midY - cos(angle) * radius)
-        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 10, weight: .heavy), .foregroundColor: NSColor.labelColor]
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11, weight: .heavy), .foregroundColor: NSColor.labelColor]
         let size = ("N" as NSString).size(withAttributes: attributes)
         ("N" as NSString).draw(at: NSPoint(x: point.x - size.width / 2, y: point.y - size.height / 2), withAttributes: attributes)
     }
@@ -43,7 +43,8 @@ struct EarthCompassControl: NSViewRepresentable {
         let local = convert(point, from: superview)
         let radius = hypot(local.x - bounds.midX, local.y - bounds.midY)
         // Leave the center available to the look pad, with a generous ring hit area.
-        return !isHidden && radius >= 29 && radius <= min(bounds.width, bounds.height) / 2 + 1 ? self : nil
+        let outerRadius = min(bounds.width, bounds.height) / 2
+        return !isHidden && radius >= outerRadius - 9 && radius <= outerRadius + 1 ? self : nil
     }
     private func angle(at point: NSPoint) -> Double? {
         let dx = point.x - bounds.midX, dy = bounds.midY - point.y

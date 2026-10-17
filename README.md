@@ -18,9 +18,10 @@ Google has announced that new Google Earth Pro desktop downloads end **June 25, 
 - **Make places recognizable.** Choose placemark colors, pin/circle/square/diamond shapes, icons, and notes. Search suggestions help find an address; selecting one zooms to a highlighted pin.
 - **Work with KML projects.** Import KML and KMZ; create placemarks, paths, and polygons; export KML for other mapping tools.
 - **Measure with precision.** Select distance, perimeter, and area units and decimal precision. Inspect coordinates, approximate elevation, and camera altitude.
-- **Add context.** Search geographic layers, compare dated NASA satellite imagery, and position local image overlays with adjustable bounds, opacity, and rotation.
+- **Add context.** Search geographic layers, compare NASA and Esri Wayback imagery with supplied capture dates, and position local image overlays with adjustable bounds, opacity, and rotation.
+- **Organize and discover data.** Use Places, Layers, and Data tabs, folders, public parcels/zoning/flood layers, utility categories, and supported custom imports/connections. Source update dates are shown when supplied; coverage varies.
 - **Capture a view.** Save map images and record silent map videos.
-- **Connect a local AI client when you choose.** The optional MCP server exposes 13 tools for navigation, search, styled places, address-list jobs, layers, overlays, and video. It is off by default, loopback-only, and protected by a session token. Use the toolbar's Local MCP panel to copy current connection instructions; keep the token private.
+- **Connect a local AI client when you choose.** The local MCP server supports navigation, search, styled places, address-list jobs, notes, public and custom data, source dates, overlays, and video. It starts enabled, can be switched off, is loopback-only, and is protected by a session token. Use the toolbar's Local MCP panel to copy current connection instructions; keep the token private.
 
 ## Map providers and requirements
 

@@ -3,6 +3,24 @@ import MapKit
 @testable import EarthPro
 
 final class LayersTests: XCTestCase {
+    @MainActor func testRestoreDefaultsMatchesOriginalCoreLayersWithoutRemovingUserData() {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("library.json")
+        let store = EarthStore(libraryURL: url)
+        store.layers.selectAll(false)
+        store.terrain = false
+        store.showPlaces = false
+        let layer = CustomDataLayer(name: "Keep my utilities")
+        store.customDataLayers = [layer]
+        store.restoreDefaultLayers()
+        XCTAssertEqual(store.layers.enabled.filter { $0.value }.map(\.key).sorted(), ["borders", "labels", "places", "roads"])
+        XCTAssertTrue(store.layers.primary)
+        XCTAssertTrue(store.terrain)
+        XCTAssertTrue(store.showPlaces)
+        XCTAssertFalse(store.grid)
+        XCTAssertEqual(store.customDataLayers.first?.id, layer.id)
+        XCTAssertEqual(try? JSONDecoder().decode(EarthLayers.self, from: Data("{}".utf8)), EarthLayers())
+    }
+
     func testBundledBordersAndCitiesHaveValidGeometry() {
         XCTAssertEqual(EarthBaseData.countries.count, 177)
         XCTAssertGreaterThan(EarthBaseData.cities.count, 200)

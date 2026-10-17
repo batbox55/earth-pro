@@ -59,10 +59,25 @@ struct GoogleMapCanvas: NSViewRepresentable {
         var ready = false
         var lastPayload = ""
         var lastLayers = ""
+        var publicDataRevision: UUID?
         var imageRevision: UUID?
         init(store: EarthStore) { self.store = store }
         func update() {
+            if let size = web?.bounds.size, size != store.publicDataViewSize, size.width > 1, size.height > 1 {
+                DispatchQueue.main.async { [weak store] in store?.publicDataViewSize = size }
+            }
             guard ready else { return }
+            if publicDataRevision != store.publicDataRevision {
+                publicDataRevision = store.publicDataRevision
+                let items: [[String: Any]] = store.publicDataFeatures.map { feature in
+                    ["id": feature.id, "kind": feature.kind.rawValue,
+                     "color": PublicDataSource.source(feature.kind).color, "opacity": store.publicDataOpacity[feature.kind] ?? 0.9,
+                     "rings": feature.rings.map { PublicDataGeometry.closed($0).map { ["lat": $0.latitude, "lng": $0.longitude] } }]
+                }
+                if let data = try? JSONSerialization.data(withJSONObject: items), let json = String(data: data, encoding: .utf8) {
+                    web?.evaluateJavaScript("window.earthPublicData(\(json));", completionHandler: nil)
+                }
+            }
             if imageRevision != store.imageOverlayRevision {
                 imageRevision=store.imageOverlayRevision
                 let items:[[String:Any]]=store.imageOverlays.filter(\.isVisible).map { item in
@@ -71,7 +86,7 @@ struct GoogleMapCanvas: NSViewRepresentable {
                 }
                 if let data=try? JSONSerialization.data(withJSONObject:items),let json=String(data:data,encoding:.utf8) { web?.evaluateJavaScript("window.earthImages(\(json));",completionHandler:nil) }
             }
-            let layerSignature = String(describing: store.layers) + store.layerRevision.uuidString + String(store.terrain) + String(store.historicalImagery) + EarthObservation.day(store.imageryDate)
+            let layerSignature = store.historicalSignature + String(describing: store.layers) + store.layerRevision.uuidString + String(store.terrain) + String(store.historicalImagery) + EarthObservation.day(store.imageryDate)
             if lastLayers != layerSignature {
                 lastLayers = layerSignature
                 let countries: [[String: Any]] = EarthBaseData.countries.map { country in
@@ -79,7 +94,7 @@ struct GoogleMapCanvas: NSViewRepresentable {
                      "outlines": country.outlines.map { $0.map { ["lat": $0.latitude, "lng": $0.longitude] } }]
                 }
                 let items: [[String: Any]] = store.visibleLayerItems.map { ["id": $0.id, "title": $0.title, "lat": $0.point.latitude, "lng": $0.point.longitude, "color": $0.color] }
-                let payload: [String: Any] = ["archiveDate": store.historicalImagery ? EarthObservation.day(store.imageryDate) : "", "enabled": store.layers.enabled, "terrain": store.terrain, "countries": countries, "regions": EarthBaseData.regions.map { $0.map { ["lat": $0.latitude, "lng": $0.longitude] } }, "parks": store.layers.enabled["parks"] == true ? EarthBaseData.parkBoundaries.map { $0.map { ["lat": $0.latitude, "lng": $0.longitude] } } : [], "water": store.layers.enabled["water"] == true ? EarthBaseData.water.map { $0.map { ["lat": $0.latitude, "lng": $0.longitude] } } : [], "items": items, "cloudDate": EarthLayerService.cloudDate]
+                let payload: [String: Any] = ["archiveTemplate": store.activeHistoricalImagery?.template ?? "", "archiveZoom": store.activeHistoricalImagery?.maxZoom ?? 9, "archiveCredit": store.activeHistoricalImagery?.credit ?? "", "enabled": store.layers.enabled, "terrain": store.terrain, "countries": countries, "regions": EarthBaseData.regions.map { $0.map { ["lat": $0.latitude, "lng": $0.longitude] } }, "parks": store.layers.enabled["parks"] == true ? EarthBaseData.parkBoundaries.map { $0.map { ["lat": $0.latitude, "lng": $0.longitude] } } : [], "water": store.layers.enabled["water"] == true ? EarthBaseData.water.map { $0.map { ["lat": $0.latitude, "lng": $0.longitude] } } : [], "items": items, "cloudDate": EarthLayerService.cloudDate]
                 if let data = try? JSONSerialization.data(withJSONObject: payload), let json = String(data: data, encoding: .utf8) {
                     web?.evaluateJavaScript("window.earthLayers(\(json));", completionHandler: nil)
                 }
@@ -112,6 +127,7 @@ struct GoogleMapCanvas: NSViewRepresentable {
                 ready = true; store.googleError = nil; store.googleReady = true
                 store.status = "Google Maps · Drag to explore · Pegman opens Street View"; update()
             case "error":
+                store.streetView = false
                 store.googleReady = false
                 store.googleError = body["message"] as? String ?? "Google Maps is unavailable."
                 store.status = "Google Maps unavailable · Check settings or use Apple Maps"
@@ -119,6 +135,7 @@ struct GoogleMapCanvas: NSViewRepresentable {
                 if let pending = store.pendingAddressLookup {
                     store.finishAddressLookup(id: pending.id, result: .failure(KMLError.invalid(store.googleError ?? "Google Maps disconnected.")))
                 }
+            case "tilesReady": store.transitionImage = nil
             case "threeD":
                 store.google3DActive = body["active"] as? Bool ?? false
                 store.google3DError = body["error"] as? Bool == true ? body["message"] as? String : nil
@@ -135,7 +152,14 @@ struct GoogleMapCanvas: NSViewRepresentable {
             case "street":
                 store.streetView = body["visible"] as? Bool ?? false
                 store.status = store.streetView ? "Street View · Drag to look around · Click arrows to move" : "Google Maps · Drag to explore"
+            case "streetMetadata":
+                store.updateStreetImagery(date: body["date"] as? String, loading: body["loading"] as? Bool ?? false, request: body["request"] as? String)
             case "pick": if let point = point(body), !store.streetView { store.pick(point) }
+            case "publicDataSelect":
+                guard store.tool == .navigate, let id = body["id"] as? String,
+                      let rawKind = body["kind"] as? String, let kind = PublicDataKind(rawValue: rawKind),
+                      let feature = store.publicDataFeatures.first(where: { $0.id == id && $0.kind == kind }) else { return }
+                store.showPublicDataDetails(feature)
             case "layerSelect":
                 if let id = body["id"] as? String { store.layerSelection = store.visibleLayerItems.first { $0.id == id } }
             case "select":
@@ -187,10 +211,12 @@ struct GoogleMapCanvas: NSViewRepresentable {
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { failed(error) }
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { failed(error) }
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            store.streetView = false
             ready = false; store.googleReady = false; store.googleError = "The Google Maps viewer stopped. Retry to reconnect."
         }
         private func failed(_ error: Error) {
             guard (error as NSError).code != NSURLErrorCancelled else { return }
+            store.streetView = false
             ready = false; store.googleReady = false; store.googleError = "The Google Maps viewer could not connect. Check your connection and retry."
         }
     }

@@ -46,6 +46,7 @@ struct EarthFeature: Codable, Identifiable, Equatable {
     var color = "#F5C542"
     var isVisible = true
     // Optional fields preserve compatibility with previously saved libraries.
+    var folderID: UUID?
     var pinShape: PinShape?
     var pinIcon: PinIcon?
     var resolvedPinShape: PinShape { pinShape ?? .pin }
@@ -57,6 +58,17 @@ struct EarthFeature: Codable, Identifiable, Equatable {
 
 enum GeoMath {
     static let radius = 6_371_008.8
+    static func framing(_ points: [GeoPoint]) -> (center: GeoPoint, distance: Double)? {
+        let points = points.filter(\.isValid)
+        guard let first = points.first else { return nil }
+        let latitudes = points.map(\.latitude)
+        let offsets = points.map { normalizedLongitude($0.longitude - first.longitude) }
+        let center = GeoPoint(latitude: ((latitudes.min() ?? 0) + (latitudes.max() ?? 0)) / 2,
+                              longitude: normalizedLongitude(first.longitude + ((offsets.min() ?? 0) + (offsets.max() ?? 0)) / 2))
+        let radius = points.map { distance(center, $0) }.max() ?? 0
+        return (center, max(750, radius * 3.2))
+    }
+
     static func distance(_ a: GeoPoint, _ b: GeoPoint) -> Double {
         let p1 = a.latitude * .pi / 180, p2 = b.latitude * .pi / 180
         let dp = p2 - p1, dl = (b.longitude - a.longitude) * .pi / 180

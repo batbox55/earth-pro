@@ -4,6 +4,7 @@
 <body><div id="map"></div><div id="map3d"></div><div id="three-notice" role="status"></div><div id="layer-credit"></div><div id="loading">Connecting to Google Maps…</div><script>
 'use strict';
 let map, panorama, navigationProjection, state, overlays=[], geometry='', camera='', query='', streetRequest='', streetGeneration=0, layerState=null, layerOverlays=[], cloudOverlay=null, trafficLayer=null, transitLayer=null;
+let publicDataOverlays=[];
 const send = (type, data={}) => window.webkit.messageHandlers.earth.postMessage({type,...data});
 const fail = message => { if(document.getElementById('loading'))document.getElementById('loading').textContent=message; send('error',{message}); };
 window.gm_authFailure = () => fail('Google rejected the API key. Check billing, Maps JavaScript API, and the website restriction in Google Maps settings.');
@@ -20,7 +21,19 @@ window.initMap = () => {
   window.earthStopMotion=()=>{if(window.earth3D?.active){window.earth3D.stop();return;}map.moveCamera({center:map.getCenter(),zoom:map.getZoom(),heading:map.getHeading()||0,tilt:map.getTilt()||0});};
   panorama=map.getStreetView();
   panorama.setOptions({enableCloseButton:true,addressControl:true,fullscreenControl:false});
-  panorama.addListener('visible_changed',()=>send('street',{visible:panorama.getVisible()}));
+  let metadataGeneration=0;
+  const updateStreetDate=()=>{
+    const generation=++metadataGeneration, pano=panorama.getPano(), request=streetRequest;
+    if(!panorama.getVisible()||!pano)return;
+    send('streetMetadata',{date:null,loading:true,request});
+    new google.maps.StreetViewService().getPanorama({pano},(result,status)=>{
+      if(generation!==metadataGeneration||!panorama.getVisible()||panorama.getPano()!==pano||request!==streetRequest)return;
+      send('streetMetadata',{date:status==='OK'?result?.imageDate??null:null,loading:false,request});
+    });
+  };
+  panorama.addListener('visible_changed',()=>{send('street',{visible:panorama.getVisible()});updateStreetDate();});
+  panorama.addListener('pano_changed',updateStreetDate);
+  map.addListener('tilesloaded',()=>send('tilesReady'));
   map.addListener('click',event=>send('pick',{lat:event.latLng.lat(),lng:event.latLng.lng()}));
   map.addListener('idle',()=>{
     const p=map.getCenter();
@@ -61,10 +74,10 @@ window.earthLayers=l=>{
   if(!trafficLayer)trafficLayer=new google.maps.TrafficLayer();trafficLayer.setMap(e.traffic?map:null);
   if(!transitLayer)transitLayer=new google.maps.TransitLayer();transitLayer.setMap(e.transit?map:null);
   map.overlayMapTypes.clear();cloudOverlay=null;
-  if(l.archiveDate){
-    const archive=new google.maps.ImageMapType({tileSize:new google.maps.Size(256,256),maxZoom:9,getTileUrl:(c,z)=>{
-      const half=20037508.342789244,size=2*half/2**z,left=-half+c.x*size,top=half-c.y*size;
-      return 'https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi?'+new URLSearchParams({SERVICE:'WMS',VERSION:'1.1.1',REQUEST:'GetMap',LAYERS:'MODIS_Terra_CorrectedReflectance_TrueColor',FORMAT:'image/png',TRANSPARENT:'TRUE',SRS:'EPSG:3857',BBOX:[left,top-size,left+size,top].join(','),WIDTH:256,HEIGHT:256,TIME:l.archiveDate});
+  if(l.archiveTemplate){
+    const archive=new google.maps.ImageMapType({tileSize:new google.maps.Size(256,256),maxZoom:l.archiveZoom,getTileUrl:(c,z)=>{
+      const n=2**z;if(c.y<0||c.y>=n)return null;
+      return l.archiveTemplate.replace('{z}',z).replace('{y}',c.y).replace('{x}',((c.x%n)+n)%n);
     }});map.overlayMapTypes.push(archive);
   }
   if(e.clouds){
@@ -73,8 +86,23 @@ window.earthLayers=l=>{
       return 'https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi?'+new URLSearchParams({SERVICE:'WMS',VERSION:'1.1.1',REQUEST:'GetMap',LAYERS:'MODIS_Terra_Cloud_Fraction_Day',FORMAT:'image/png',TRANSPARENT:'TRUE',SRS:'EPSG:3857',BBOX:[left,top-size,left+size,top].join(','),WIDTH:256,HEIGHT:256,TIME:l.cloudDate});
     }});map.overlayMapTypes.push(cloudOverlay);
   }
-  document.getElementById('layer-credit').textContent=[l.archiveDate?'Imagery: NASA Terra / MODIS '+l.archiveDate:'',e.borders||e.labels||e.water||e.parks||e.transit?'Boundaries / places: Natural Earth':'',e.wikipedia?'Articles: Wikipedia contributors · CC BY-SA 4.0':'',e.photos?'Photos: Wikimedia Commons':'',e.earthquakes?'Earthquakes: USGS':'',e.clouds?'Cloud fraction: NASA MODIS '+l.cloudDate:''].filter(Boolean).join(' · ');
+  document.getElementById('layer-credit').textContent=[l.archiveCredit||'',e.borders||e.labels||e.water||e.parks||e.transit?'Boundaries / places: Natural Earth':'',e.wikipedia?'Articles: Wikipedia contributors · CC BY-SA 4.0':'',e.photos?'Photos: Wikimedia Commons':'',e.earthquakes?'Earthquakes: USGS':'',e.clouds?'Cloud fraction: NASA MODIS '+l.cloudDate:''].filter(Boolean).join(' · ');
   if(state){applyLayerOptions(state);window.earth3D?.update(state,layerState);}
+};
+window.earthPublicData=items=>{
+  publicDataOverlays.forEach(line=>{google.maps.event.clearInstanceListeners(line);line.setMap(null);});publicDataOverlays=[];
+  if(!map)return;
+  for(const feature of items){
+    for(const path of feature.rings){
+      if(path.length<2)continue;
+      const line=new google.maps.Polyline({map,path,strokeColor:feature.color,strokeOpacity:feature.opacity,strokeWeight:2,geodesic:true,zIndex:20});
+      line.addListener('click',event=>{
+        if(state?.drawing&&event.latLng)send('pick',{lat:event.latLng.lat(),lng:event.latLng.lng()});
+        else send('publicDataSelect',{id:feature.id,kind:feature.kind});
+      });
+      publicDataOverlays.push(line);
+    }
+  }
 };
 window.earthRestore2D = () => { window.requestAnimationFrame(()=>{ if(window.earth3D?.active)return; google.maps.event.trigger(map,"resize"); camera=""; if(state)window.earthUpdate(state); }); };
 window.earthUpdate = s => {

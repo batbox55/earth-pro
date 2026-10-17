@@ -103,14 +103,17 @@ enum EarthNavigation {
             }
             return nil
         }
+        let hit = window.contentView.flatMap { content in content.hitTest(content.convert(event.locationInWindow, from: nil)) }
+        let hitsRenderer = hit.map { $0 === view || $0.isDescendant(of: view) } ?? false
+        if event.type == .leftMouseDown, !hitsRenderer { nativePan = nil }
         if var pan = nativePan {
             if event.type == .leftMouseDragged, hypot(point.x - pan.start.x, point.y - pan.start.y) > 4 { pan.moved = true; nativePan = pan }
             if event.type == .leftMouseUp {
                 nativePan = nil
-                if !pan.moved, store.tool == .navigate, pickLayerAt?(point) == true { return nil }
+                if !pan.moved, hitsRenderer, store.tool == .navigate, pickLayerAt?(point) == true { return nil }
             }
         }
-        guard let content = window.contentView, let hit = content.hitTest(content.convert(event.locationInWindow, from: nil)), hit === view || hit.isDescendant(of: view) else {
+        guard hitsRenderer else {
             if event.type == .mouseMoved { pointerRequest = UUID(); store.cursorPoint = nil }
             return event
         }

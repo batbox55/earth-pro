@@ -27,7 +27,7 @@ struct ContentView: View {
                 Button { store.showImageOverlays = true } label: { Label("Image Overlays", systemImage: "photo.on.rectangle.angled") }
                     .labelStyle(.iconOnly).help("Manage image overlays")
                     .accessibilityIdentifier("image-overlays-toolbar")
-                Button { store.historicalImagery.toggle() } label: { Label("Historical Imagery", systemImage: "clock.arrow.circlepath") }.help("Browse NASA historical imagery").tint(store.historicalImagery ? .accentColor : .primary)
+                Button { store.historicalImagery.toggle() } label: { Label("Historical Imagery", systemImage: "clock.arrow.circlepath") }.help("Browse dated NASA and Wayback imagery").tint(store.historicalImagery ? .accentColor : .primary)
                 Button { store.sunlight.toggle(); if store.sunlight { store.setMode(.globe) } } label: { Label("Sunlight", systemImage: "sun.max") }.help("Show sunlight on the globe").tint(store.sunlight ? .accentColor : .primary)
                 Divider().frame(height: 20)
                 toolButton("Ruler", icon: "ruler", tool: .ruler)
@@ -48,16 +48,48 @@ struct ContentView: View {
             }
         }
         .alert("Earth Pro", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) { Button("OK") { store.error = nil } } message: { Text(store.error ?? "") }
+        .sheet(item: $store.publicDataSelection) { feature in PublicDataDetailView(store: store, feature: feature) }
+        .sheet(isPresented: $store.showCustomData) { CustomDataView(store: store) }
+        .sheet(isPresented: $store.showSourceDates) { SourceDatesView(store: store) }
         .sheet(isPresented: $store.showAddressImport) { AddressImportView(store: store) }
         .sheet(isPresented: $store.showImageOverlays) { ImageOverlaysView(store:store) }
         .sheet(isPresented: $store.showLocalMCP) { LocalMCPView(store:store) }
         .sheet(isPresented: $store.googleSettings) { GoogleMapsSettingsView(store: store) }
-        .onAppear { store.loadImageOverlays(); store.restoreGoogleSession(); store.updateLayerFeeds(); store.updateElevation() }
+        .onAppear { store.restoreMCPPreference(); store.loadImageOverlays(); store.restoreGoogleSession(); store.updateLayerFeeds(); store.updateElevation() }
         .onChange(of: store.mode) { store.stopHistoryPlayback(); store.cursorPoint = nil; store.updateLayerFeeds(); store.refreshArchive() }
         .onChange(of: store.latitude) { store.cursorPoint = nil; store.scheduleNearbyLayerRefresh(); store.updateElevation() }
         .onChange(of: store.longitude) { store.cursorPoint = nil; store.scheduleNearbyLayerRefresh(); store.updateElevation() }
         .onChange(of: store.distance) { store.scheduleNearbyLayerRefresh() }
-        .onChange(of: store.cursorPoint) { store.updateElevation() }
+        .onChange(of: store.cursorPoint) { store.updateElevation(); store.scheduleImageryMetadata() }
+        .onChange(of: store.latitude) { store.scheduleImageryMetadata() }
+        .onChange(of: store.longitude) { store.scheduleImageryMetadata() }
+        .onChange(of: store.distance) { store.scheduleImageryMetadata() }
+        .onChange(of: store.cameraRequest) { store.refreshPublicData(); if store.showPublicData { store.scheduleDataDiscovery() } }
+        .onChange(of: store.latitude) { if store.showPublicData { store.scheduleDataDiscovery() } }
+        .onChange(of: store.longitude) { if store.showPublicData { store.scheduleDataDiscovery() } }
+        .onChange(of: store.distance) { if store.showPublicData { store.scheduleDataDiscovery() } }
+        .onChange(of: store.showPublicData) {
+            if store.showPublicData {
+                sidebar = true
+                if store.sidebarSection != .data { store.setSidebarSection(.data) }
+                store.scheduleDataDiscovery()
+            } else {
+                store.discoveryTask?.cancel()
+                if sidebar && store.sidebarSection == .data { store.setSidebarSection(.places) }
+            }
+        }
+        .onChange(of: store.sidebarSection) { if store.sidebarSection == .data { sidebar = true } }
+        .onChange(of: sidebar) {
+            if sidebar && store.sidebarSection == .data { store.showPublicData = true }
+            else if !sidebar { store.showPublicData = false }
+        }
+        .onChange(of: store.mode) { store.refreshPublicData() }
+        .onChange(of: store.provider) { store.refreshPublicData() }
+        .onChange(of: store.layers) { store.refreshPublicData() }
+        .onChange(of: store.streetView) { store.refreshPublicData() }
+        .onChange(of: store.latitude) { store.refreshPublicData() }
+        .onChange(of: store.longitude) { store.refreshPublicData() }
+        .onChange(of: store.distance) { store.refreshPublicData() }
         .onChange(of: store.miles) { store.updateElevation() }
         .sheet(item: $store.layerSelection) { LayerItemDetail(item: $0) }
         .sheet(item: $store.editingFeature) { feature in FeatureEditor(store: store, feature: feature) }
@@ -87,6 +119,14 @@ struct ContentView: View {
                 if store.googleKey != nil { GoogleMapCanvas(store: store).id(store.googleRevision).onDisappear { store.googleReady = false }.frame(maxWidth: .infinity, maxHeight: .infinity) }
                 else { Color(nsColor: .windowBackgroundColor).overlay { googleSetup } }
             } else { MapCanvas(store: store).frame(maxWidth: .infinity, maxHeight: .infinity) }
+            if let image = store.transitionImage, store.mode == .map {
+                Image(nsImage: image).resizable().scaledToFill().clipped().allowsHitTesting(false)
+                    .overlay(alignment: .bottomLeading) { Text("Loading destination…").padding(8).background(.regularMaterial) }
+                    .task(id: store.cameraRequest) {
+                        try? await Task.sleep(for: .seconds(8))
+                        if !Task.isCancelled { store.transitionImage = nil }
+                    }
+            }
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     if !store.streetView {
@@ -144,7 +184,7 @@ struct ContentView: View {
                     if store.mode == .globe {
                         VStack(alignment: .leading, spacing: 3) {
                             Text("EARTH").font(.system(size: 11, weight: .semibold, design: .rounded)).tracking(3)
-                            Text("NASA / Goddard Space Flight Center SVS · Natural Earth").font(.system(size: 9))
+                            Text(store.activeGlobeImagery?.credit ?? "NASA / Goddard Space Flight Center SVS · Natural Earth").font(.system(size: 9))
                             if store.terrain { Text("Terrain: Mapzen · USGS · NOAA and contributors").font(.system(size: 9)) }
                         }.foregroundStyle(.white.opacity(0.7)).padding(8).background(.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 5))
                     }
@@ -161,7 +201,20 @@ struct ContentView: View {
                         }.font(.system(size: 9)).padding(8).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 5))
                     }
                     Spacer()
-
+                    if !store.customDataFeatures.isEmpty {
+                        Button { store.showCustomData = true } label: {
+                            Text("Custom data: " + store.customDataLayers.filter(\.enabled).map(\.name).joined(separator: " · "))
+                                .font(.system(size: 9)).lineLimit(2).multilineTextAlignment(.trailing)
+                        }.buttonStyle(.plain).padding(7).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 5))
+                            .help("Custom layer sources, coverage and update dates")
+                    }
+                    if !store.publicDataFeatures.isEmpty {
+                        Button { store.openPublicDataBrowser() } label: {
+                            Text("Public data: " + Array(Set(PublicDataKind.allCases.filter { kind in store.publicDataFeatures.contains { $0.kind == kind } }.map { PublicDataSource.source($0).publisher })).sorted().joined(separator: " · "))
+                                .font(.system(size: 9)).multilineTextAlignment(.trailing)
+                        }.buttonStyle(.plain).padding(7).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 5))
+                            .help("Public-data source, coverage and terms")
+                    }
                 }
             }.padding(18)
             if store.showNavigation && !store.streetView {
@@ -204,11 +257,13 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Imagery and terrain information").font(.headline)
             Text(store.imageryInformation)
-            if store.historicalImagery {
-                Text("NASA Terra / MODIS Corrected Reflectance. Daily swaths at 250 m source resolution; globe preview is downsampled. Missing swaths may appear blank. The selected date is UTC.")
+            if store.showingStreetImagery {
+                Text(store.imageryDateHelp)
+            } else if store.historicalImagery {
+                Text(store.historyAttribution + ". Available imagery loads as tiles. Clouds and gaps may show the underlying map. Release dates are separate from capture dates.")
                 Link("NASA GIBS imagery information ↗", destination: URL(string: "https://nasa-gibs.github.io/gibs-api-docs/")!)
             } else {
-                Text(store.mode == .globe ? "Blue Marble is a composite, with no single acquisition date." : "This map provider does not supply imagery acquisition dates through its API.")
+                Text(store.imageryDateHelp)
             }
             Divider()
             Text(store.elevationSource)
@@ -222,8 +277,12 @@ struct ContentView: View {
     private var statusBar: some View {
         HStack(spacing: 10) {
             if store.busy || store.searching { ProgressView().controlSize(.mini) }
-            Text(store.imageryInformation).lineLimit(1).onTapGesture { imageryDetails = true }.popover(isPresented: $imageryDetails) { observationDetails }.help(store.historicalImagery ? "NASA Terra / MODIS daily imagery, 250 m source resolution. Coverage gaps may appear blank." : "Providers do not expose per-pixel acquisition dates. Composite imagery has no single acquisition date.")
+            Text(store.imageryInformation).lineLimit(1).onTapGesture { imageryDetails = true }.popover(isPresented: $imageryDetails) { observationDetails }.help(store.imageryDateHelp)
             Spacer(minLength: 4)
+            Text(store.imageryDateLabel).monospacedDigit().fixedSize().help(store.imageryDateHelp)
+                .accessibilityIdentifier("imagery-date")
+                .onTapGesture { imageryDetails = true }
+            Divider().frame(height: 12)
             Text(EarthObservation.coordinates(store.observationPoint, dms: store.dmsCoordinates)).monospacedDigit().textSelection(.enabled).help(store.cursorPoint == nil ? "View center coordinates" : "Pointer coordinates")
             Divider().frame(height: 12)
             Text(store.elevationStatus).monospacedDigit().help(store.elevationSource + ". Elevation at the pointer, or view center. Coarse estimates are marked; online land refinement requires internet.")

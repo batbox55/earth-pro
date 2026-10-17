@@ -114,7 +114,7 @@ import Network
             tool("add_geometry","Save a styled placemark, path or polygon. Points use latitude/longitude; pin_shape and pin_icon apply to point geometry.",Self.geometryProperties.merging(["name":string,"kind":["type":"string","enum":["point","path","polygon"]],"points":Self.pointsSchema]) { _, new in new },["name","kind","points"]),
             tool("image_overlay","Add a local image, update georeferencing/opacity/visibility, or remove an overlay. File paths are only read as images, never executed.",["action":["type":"string","enum":["add","update","remove"]],"path":string,"id":string,"north":number,"south":number,"east":number,"west":number,"rotation":number,"opacity":number,"visible":boolean],["action"]),
             tool("record_video","Start or stop recording the map view. MCP recordings are saved under Movies/EarthPro with unique filenames.",["action":["type":"string","enum":["start","stop"]]],["action"])
-        ] + Self.recentFeatureTools
+        ] + Self.recentFeatureTools + Self.dataTools
     }
     private func execute(_ name:String,_ a:[String:Any],_ s:EarthStore) async throws -> [String:Any] {
         func invalid(_ text:String)->Error { KMLError.invalid(text) }
@@ -125,7 +125,7 @@ import Network
         case "get_state":
             let features=try JSONSerialization.jsonObject(with:JSONEncoder().encode(s.features))
             var state: [String: Any] = ["latitude":s.latitude,"longitude":s.longitude,"distance":s.distance,"heading":s.heading,"pitch":s.pitch,"provider":s.provider.rawValue,"mode":s.mode.rawValue,"layers":s.layers.enabled,"features":features,"overlays":s.imageOverlays.map{["id":$0.id.uuidString,"name":$0.name,"visible":$0.isVisible,"opacity":$0.opacity,"north":$0.north,"south":$0.south,"east":$0.east,"west":$0.west,"rotation":$0.rotation] as [String:Any]},"recording":s.recording,"status":s.status,"searchResults":s.searchHits.map{["title":$0.title,"latitude":$0.point.latitude,"longitude":$0.point.longitude] as [String:Any]}]
-            state.merge(try recentFeatureState(s)) { _, new in new }; return state
+            state.merge(try recentFeatureState(s)) { _, new in new }; state.merge(try dataFeatureState(s)) { _, new in new }; return state
         case "fly_to":
             let p=try GeoPoint(latitude:number("latitude"),longitude:number("longitude")), distance=try number("distance",s.distance),heading=try number("heading",s.heading),pitch=try number("pitch",s.pitch)
             guard p.isValid,(100...45_000_000).contains(distance),(0...80).contains(pitch) else { throw invalid("Invalid coordinate, distance (100–45000000 m) or pitch (0–80°)") }
@@ -172,6 +172,7 @@ import Network
             else { throw invalid("Expected start or stop") }
             return ["recording":s.recording,"path":s.recordingURL?.path ?? ""]
         default:
+            if let result = try await executeDataFeature(name, a, s) { return result }
             let result = try executeRecentFeature(name, a, s)
             if name == "address_import", a["action"] as? String == "start" { addressImportJobID = addressImporter.jobID }
             return result
@@ -180,8 +181,34 @@ import Network
     }
 }
 
+enum LocalMCPPreference {
+    static let key = "earthLocalMCPEnabled"
+
+    static func isEnabled(in defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: key) == nil ? true : defaults.bool(forKey: key)
+    }
+
+    static func save(_ enabled: Bool, in defaults: UserDefaults = .standard) {
+        defaults.set(enabled, forKey: key)
+    }
+}
+
 @MainActor extension EarthStore {
+    /// Restore once per store, so view appearances do not replace live client connections.
+    func restoreMCPPreference() {
+        guard !mcpPreferenceRestored else { return }
+        mcpPreferenceRestored = true
+        applyMCPEnabled(LocalMCPPreference.isEnabled())
+    }
+
     func setMCPEnabled(_ enabled:Bool) {
+        mcpPreferenceRestored = true
+        LocalMCPPreference.save(enabled)
+        applyMCPEnabled(enabled)
+    }
+
+    private func applyMCPEnabled(_ enabled: Bool) {
+        if enabled, mcpEnabled, localMCP != nil { return }
         localMCP?.stop();localMCP=nil;mcpEnabled=false;mcpStatus="Off"
         guard enabled else { return }
         let server=EarthMCPServer(store:self);localMCP=server;mcpEnabled=true;mcpStatus="Starting…"

@@ -84,12 +84,64 @@ final class ObservationTests: XCTestCase {
     }
     @MainActor func testMetadataAndDateBounds() {
         let store = EarthStore(libraryURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
-        XCTAssertTrue(store.imageryInformation.contains("Composite"))
+        XCTAssertTrue(store.imageryInformation.contains("Esri tiled"))
         store.mode = .map; store.provider = .apple
         XCTAssertTrue(store.imageryInformation.contains("not supplied"))
         store.historicalImagery = true; store.imageryDate = EarthObservation.earliest; store.stepImagery(days: -1)
         XCTAssertEqual(store.imageryDate, EarthObservation.earliest)
         store.imageryDate = EarthObservation.latest; store.stepImagery(days: 1)
         XCTAssertEqual(store.imageryDate, EarthObservation.latest)
+    }
+    @MainActor func testImageryDateDescribesDisplayedSource() {
+        let store = EarthStore(libraryURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        XCTAssertEqual(store.imageryDateLabel, "Imagery date: Not supplied")
+        store.mode = .map; store.provider = .apple; store.mapStyle = .hybrid
+        XCTAssertEqual(store.imageryDateLabel, "Imagery date: Not supplied")
+        store.provider = .openStreetMap
+        XCTAssertEqual(store.imageryDateLabel, "Imagery date: N/A")
+        store.provider = .google; store.mapStyle = .streets; store.google3DActive = true
+        XCTAssertEqual(store.imageryDateLabel, "Imagery date: Not supplied")
+        store.historicalImagery = true; store.imageryDate = EarthObservation.earliest
+        XCTAssertEqual(store.imageryDateLabel, "Imagery day: 2000-02-24 UTC")
+        store.mode = .globe
+        store.archiveLoading = true
+        XCTAssertEqual(store.imageryDateLabel, "Imagery day: 2000-02-24 UTC")
+        store.archiveLoading = false
+        XCTAssertEqual(store.imageryDateLabel, "Imagery day: 2000-02-24 UTC")
+        store.archiveImage = NSImage(size: NSSize(width: 1, height: 1))
+        store.archiveLoadedDate = "2000-02-25"
+        XCTAssertEqual(store.imageryDateLabel, "Imagery day: 2000-02-24 UTC")
+    }
+    @MainActor func testStreetViewDatesClearAndRejectStaleMetadata() {
+        let store = EarthStore(libraryURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        store.mode = .map; store.provider = .google; store.streetView = true
+        let request = store.streetRequest.uuidString
+        store.updateStreetImagery(date: nil, loading: true, request: request)
+        XCTAssertEqual(store.imageryDateLabel, "Street View date: Loading…")
+        store.updateStreetImagery(date: "2024-09", loading: false, request: request)
+        XCTAssertEqual(store.imageryDateLabel, "Street View date: 2024-09")
+        XCTAssertEqual(store.imageryInformation, "Imagery: Google Street View")
+        store.updateStreetImagery(date: "2023", loading: false, request: request)
+        XCTAssertEqual(store.imageryDateLabel, "Street View date: 2023")
+        for date in [nil, "", "2024-13", "© 2024 Google", "2024-09-17"] as [String?] {
+            store.updateStreetImagery(date: date, loading: false, request: request)
+            XCTAssertEqual(store.imageryDateLabel, "Street View date: Not supplied")
+        }
+        store.updateStreetImagery(date: "2024-09", loading: false, request: request)
+        store.updateStreetImagery(date: nil, loading: true, request: request)
+        XCTAssertNil(store.streetImageryDate)
+        store.streetRequest = UUID()
+        store.updateStreetImagery(date: "2024-09", loading: false, request: request)
+        XCTAssertNil(store.streetImageryDate)
+        let current = store.streetRequest.uuidString
+        store.updateStreetImagery(date: "2025-02", loading: false, request: current)
+        store.streetView = false
+        store.updateStreetImagery(date: "2025-02", loading: false, request: current)
+        XCTAssertNil(store.streetImageryDate)
+        XCTAssertEqual(store.imageryDateLabel, "Imagery date: Not supplied")
+        store.provider = .apple
+        store.streetView = true
+        store.updateStreetImagery(date: "2025-02", loading: false, request: current)
+        XCTAssertNil(store.streetImageryDate)
     }
 }
