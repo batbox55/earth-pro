@@ -19,14 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-Third-party scope notice (separate from the MIT License above)
-
-The MIT License above covers original Earth Pro code and original app artwork
-only. Third-party data, imagery, APIs, and services retain their own terms.
-The distributed data/service configuration is not cleared for commercial use
-as-is, including the noncommercial-only Open-Meteo free elevation endpoint.
-Commercial users must replace or properly license restricted sources and
-comply with every applicable provider's terms. This notice does not restrict
-the commercial rights granted for MIT-licensed code. See THIRD_PARTY_NOTICES.md
-and Sources/EarthPro/Resources/License-Notice.txt.
