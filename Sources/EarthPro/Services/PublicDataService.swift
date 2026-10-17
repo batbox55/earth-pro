@@ -18,6 +18,7 @@ actor PublicDataService {
     static let shared = PublicDataService()
     private let session: URLSession
     private var activeRequests = 0
+    private var rendererCache: [PublicDataKind: (Date, Data)] = [:]
     static let byteLimit = 4 * 1_024 * 1_024
     static let featureLimit = 500
     static let vertexLimit = 16_000
@@ -35,9 +36,24 @@ actor PublicDataService {
     func fetch(kind: PublicDataKind, bounds: PublicDataBounds, distance: Double) async throws -> PublicDataSnapshot {
         guard distance.isFinite, distance > 0, distance <= PublicDataSource.source(kind).maxDistance else { throw PublicDataError.tooFar }
         guard bounds.isValid else { throw PublicDataError.invalidGeometry }
-        let data = try await request(Self.queryURL(kind: kind, bounds: bounds, distance: distance))
+        let metadata: Data?
+        if let cached = rendererCache[kind], Date().timeIntervalSince(cached.0) < 900 { metadata = cached.1 }
+        else {
+            var components = URLComponents(url:PublicDataSource.source(kind).serviceURL,resolvingAgainstBaseURL:false)!
+            components.queryItems = [URLQueryItem(name:"f",value:"json")]
+            metadata = try? await request(components.url!)
+            if let metadata { rendererCache[kind] = (Date(),metadata) }
+        }
         try Task.checkCancellation()
-        return try Self.decode(data, kind: kind, bounds: bounds)
+        let renderer = metadata.flatMap(VectorStyling.arcGIS)
+        let data = try await request(Self.queryURL(kind:kind,bounds:bounds,distance:distance,additionalFields:renderer?.fields ?? []))
+        try Task.checkCancellation()
+        var snapshot = try Self.decode(data,kind:kind,bounds:bounds)
+        var result = CustomDataResult(features:snapshot.vectors,providerUpdatedAt:nil,partial:snapshot.partial)
+        renderer?.apply(&result)
+        snapshot.vectors = result.features; snapshot.legend = result.legend.isEmpty ? snapshot.legend : result.legend
+        snapshot.stylingNotice = result.stylingNotice ?? snapshot.stylingNotice
+        return snapshot
     }
 
     func details(kind: PublicDataKind, id: String) async throws -> [String: String] {
@@ -52,6 +68,15 @@ actor PublicDataService {
     }
 
     private func request(_ url: URL) async throws -> Data {
+        do { return try await requestOnce(url) }
+        catch {
+            guard CustomDataService.shouldRetry(error) else { throw error }
+            // Retry once using the same normal TLS validation; never accept invalid certificates.
+            try await Task.sleep(for:.milliseconds(150))
+            return try await requestOnce(url)
+        }
+    }
+    private func requestOnce(_ url: URL) async throws -> Data {
         // Actor reentrancy permits cancellation while waiting, and caps fetch + detail requests together.
         while activeRequests >= 2 { try await Task.sleep(nanoseconds: 30_000_000) }
         try Task.checkCancellation()
@@ -73,13 +98,15 @@ actor PublicDataService {
         return data
     }
 
-    static func queryURL(kind: PublicDataKind, bounds: PublicDataBounds, distance: Double) -> URL {
-        let fields: String
+    static func queryURL(kind: PublicDataKind, bounds: PublicDataBounds, distance: Double, additionalFields: [String] = []) -> URL {
+        let base: String
         switch kind {
-        case .parcels: fields = "OBJECTID,LegalLotID,Name,LotType"
-        case .zoning: fields = "FID,ZONECLASS,DESCRIPTIO,CATEGORY"
-        case .flood: fields = "OBJECTID,FLD_ZONE,ZONE_SUBTY,SFHA_TF"
+        case .parcels: base = "OBJECTID,LegalLotID,Name,LotType"
+        case .zoning: base = "FID,ZONECLASS,DESCRIPTIO,CATEGORY"
+        case .flood: base = "OBJECTID,FLD_ZONE,ZONE_SUBTY,SFHA_TF"
         }
+        let extra = additionalFields.prefix(3).filter { $0.range(of:"^[A-Za-z_][A-Za-z0-9_]{0,127}$",options:.regularExpression) != nil }
+        let fields = (base.split(separator:",").map(String.init)+extra).joined(separator:",")
         return url(kind: kind, parameters: [
             "f": "geojson", "where": "1=1", "geometry": "\(bounds.west),\(bounds.south),\(bounds.east),\(bounds.north)",
             "geometryType": "esriGeometryEnvelope", "inSR": "4326", "outSR": "4326", "spatialRel": "esriSpatialRelIntersects",
@@ -107,6 +134,7 @@ actor PublicDataService {
         var partial = object["exceededTransferLimit"] as? Bool == true || records.count > featureLimit
         if let properties = object["properties"] as? [String: Any], properties["exceededTransferLimit"] as? Bool == true { partial = true }
         var result: [PublicDataFeature] = [], count = 0
+        var vectors: [EarthFeature] = []
         var seen = Set<String>()
         for record in records.prefix(featureLimit) {
             try Task.checkCancellation()
@@ -136,11 +164,20 @@ actor PublicDataService {
             guard let id, Int64(id) != nil else { throw PublicDataError.invalidResponse }
             guard seen.insert(id).inserted else { partial = true; continue }
             let size = rings.reduce(0) { $0 + $1.count }
-            guard count + size <= vertexLimit else { partial = true; continue }
+            guard count + size <= vertexLimit, vectors.count + polygons.count <= featureLimit else { partial = true; continue }
             count += size
             result.append(.init(id: id, kind: kind, rings: rings, attributes: attributes))
+            var ringIndex = 0
+            for polygon in polygons {
+                let grouped = Array(rings[ringIndex..<ringIndex+polygon.count]); ringIndex += polygon.count
+                var vector = EarthFeature(name: "\(kind.rawValue) \(id)",kind:.polygon,points:grouped[0])
+                vector.holes = Array(grouped.dropFirst()); vector.attributes = attributes; vector.sourceID = id
+                vectors.append(vector)
+            }
         }
-        return .init(kind: kind, bounds: bounds, features: result, partial: partial)
+        var styled = CustomDataResult(features:vectors,providerUpdatedAt:nil,partial:partial)
+        VectorStyling.generated(&styled)
+        return .init(kind: kind, bounds: bounds, features: result, partial: partial, vectors:styled.features,legend:styled.legend,stylingNotice:styled.stylingNotice)
     }
 
     private static func checkError(_ object: [String: Any]) throws {
@@ -154,7 +191,7 @@ actor PublicDataService {
     }
     private static func strings(_ properties: [String: Any]) -> [String: String] {
         properties.reduce(into: [:]) { result, pair in
-            if let value = scalar(pair.value) { result[pair.key] = String(value.prefix(2_000)) }
+            if let value = scalar(pair.value) { result[pair.key] = String(value.prefix(2_000)) } else if pair.value is NSNull { result[pair.key] = "<Null>" }
         }
     }
 }

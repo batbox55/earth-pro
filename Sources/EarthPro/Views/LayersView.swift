@@ -220,6 +220,7 @@ struct LayersView: View {
                     Button("Remove layer") { store.removeCustomData(layer.id) }
                 } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize().accessibilityLabel("Actions for \(layer.name)")
             }
+            LayerLegendView(entries: layer.legend ?? [], notice: layer.stylingNotice).padding(.leading, 20)
             if let folder = store.folders.first(where: { $0.id == layer.folderID }) { source(folder.name).padding(.leading, 20) }
             HStack(alignment: .top, spacing: 4) {
                 if store.customDataLoading.contains(layer.id) { ProgressView().controlSize(.mini) }
@@ -247,6 +248,7 @@ struct LayersView: View {
                     if store.publicDataLoading.contains(item.kind) { ProgressView().controlSize(.mini) }
                     source(store.publicDataStatus[item.kind] ?? item.publisher)
                 }
+                LayerLegendView(entries: store.publicDataSnapshots[item.kind]?.legend ?? [], notice: store.publicDataSnapshots[item.kind]?.stylingNotice)
                 source(store.sourceFreshness[item.id]?.updateLabel ?? "Source updated: Not supplied")
                 HStack(spacing: 6) {
                     Text("Opacity").foregroundStyle(.secondary)

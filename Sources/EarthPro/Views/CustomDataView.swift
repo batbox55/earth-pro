@@ -46,7 +46,7 @@ struct CustomDataView: View {
                 Spacer()
                 Button("Source dates…") { dismiss(); Task { @MainActor in try? await Task.sleep(for: .milliseconds(300)); store.showSourceDates = true } }
             }
-            Text("KML, KMZ and GeoJSON files · Public GeoJSON or ArcGIS layer URLs").font(.caption).foregroundStyle(.secondary)
+            Text("Shapefile ZIP/folder, KML, KMZ and GeoJSON files · Public GeoJSON or ArcGIS layer URLs").font(.caption).foregroundStyle(.secondary)
             if store.customDataImporting { ProgressView("Importing layer…").controlSize(.small) }
             if connecting { connectionForm }
             if !store.publicDataSupported {
@@ -76,7 +76,7 @@ struct CustomDataView: View {
                     }
                 }.padding(.vertical, 8)
             }
-            Text("Live layers refresh only when requested. ArcGIS loads the current area below 50 km; GeoJSON loads a bounded file. Up to 8 layers, 300 geometries and 16,000 vertices per layer. Polygon rings display as outlines.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text("Live layers refresh only when requested. ArcGIS loads the current area below 50 km; GeoJSON loads a bounded file. Up to 8 layers, 300 geometries and 16,000 vertices per layer. Polygons preserve holes and display filled colors. Source styling and legends appear below each layer.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }.padding(22).frame(width: 650, height: 690)
     }
     private var connectionForm: some View {
@@ -139,6 +139,7 @@ struct CustomDataView: View {
             Text(layer.providerUpdatedAt.map { "Source updated: " + $0.formatted(date: .abbreviated, time: .shortened) } ?? "Source updated: Not supplied by publisher").font(.caption).foregroundStyle(.secondary)
             if let modified = layer.fileModifiedAt { Text("File modified: " + modified.formatted(date: .abbreviated, time: .shortened)).font(.caption2).foregroundStyle(.secondary) }
             if let checked = layer.checkedAt { Text("Last checked: " + checked.formatted(date: .abbreviated, time: .shortened)).font(.caption2).foregroundStyle(.secondary) }
+            LayerLegendView(entries: layer.legend ?? [], notice: layer.stylingNotice)
             HStack(alignment: .top) {
                 if store.customDataLoading.contains(layer.id) { ProgressView().controlSize(.mini) }
                 Text(store.customDataStatus[layer.id] ?? "Ready").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

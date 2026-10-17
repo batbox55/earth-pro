@@ -8,9 +8,9 @@ import Foundation
         let string: [String: Any] = ["type":"string"], boolean: [String: Any] = ["type":"boolean"]
         func action(_ names: [String]) -> [String: Any] { ["type":"string","enum":names] }
         return [
-            tool("data_discovery", "Find public service candidates for the current map or a named area. Discovery uses a settled-view debounce; poll list. Inspect numbered layers in a discovered service, then connect its layer URL using custom_data. Catalog dates are not dataset update dates.", ["action":action(["list","refresh","follow_map","area","service_layers"]),"area":string,"query":["type":"string","maxLength":200],"service_id":string], ["action"]),
+            tool("data_discovery", "Find public service candidates for the current map or a named area. Discovery uses a settled-view debounce; poll list. Inspect numbered layers in a discovered service, then connect its layer URL using custom_data. Catalog dates are not dataset update dates. Use catalog to search the bundled workbook index without networking (query, offset, limit); catalog_layers reads numbered layers for a catalog service_id. Connect compatible returned URLs using custom_data; source links require publisher setup/format support.", ["action":action(["list","refresh","follow_map","area","service_layers","catalog","catalog_layers"]),"area":string,"query":["type":"string","maxLength":200],"service_id":string,"offset":["type":"integer","minimum":0],"limit":["type":"integer","minimum":1,"maximum":100]], ["action"]),
             tool("public_data", "List public layers and current-view status/features. Enable, hide, set opacity, refresh, or inspect a currently loaded feature by feature_id. Refresh/details are asynchronous: poll list/get_state. Coverage is source-specific; enabling never establishes coverage.", ["action":action(["list","enable","visible","opacity","refresh","details"]),"kind":action(PublicDataKind.allCases.map(\.rawValue)),"enabled":boolean,"opacity":["type":"number","minimum":0,"maximum":1],"feature_id":string], ["action"]),
-            tool("custom_data", "List utility/custom layers, import a local KML/KMZ/GeoJSON file, connect a public GeoJSON/numbered ArcGIS layer, change visibility/category/name, refresh, frame or remove. Downloads/imports return accepted, not completion; poll list for running/status/error and new IDs. Files are geometry only, never executed. Connections preserve bounded manual current-view refresh. Use features to inspect bounded pages of loaded/imported utility geometry, including notes and coordinates. Use folders to organize layers.", ["action":action(["list","connect","import_file","features","visible","refresh","zoom","remove","rename","category"]),"id":string,"name":string,"category":action(CustomDataCategory.allCases.map(\.rawValue)),"format":action(CustomDataFormat.allCases.map(\.rawValue)),"url":string,"path":string,"enabled":boolean,"feature_id":string,"offset":["type":"integer","minimum":0],"limit":["type":"integer","minimum":1,"maximum":100]], ["action"]),
+            tool("custom_data", "List utility/custom layers, import a local shapefile ZIP/SHP, KML/KMZ/GeoJSON file, connect a public GeoJSON/numbered ArcGIS layer, change visibility/category/name, refresh, frame or remove. Downloads/imports return accepted, not completion; poll list for running/status/error and new IDs. Files are geometry only, never executed. Connections preserve bounded manual current-view refresh. Use features to inspect bounded pages of loaded/imported utility geometry, including notes and coordinates. Use folders to organize layers.", ["action":action(["list","connect","import_file","features","visible","refresh","zoom","remove","rename","category"]),"id":string,"name":string,"category":action(CustomDataCategory.allCases.map(\.rawValue)),"format":action(CustomDataFormat.allCases.map(\.rawValue)),"url":string,"path":string,"enabled":boolean,"feature_id":string,"offset":["type":"integer","minimum":0],"limit":["type":"integer","minimum":1,"maximum":100]], ["action"]),
             tool("location_notes", "Read or replace notes on a saved place or temporary search pin, preserving its coordinates/style. Set save=true to save a temporary pin. Saved notes persist.", ["action":action(["get","set"]),"id":string,"notes":["type":"string","maxLength":100000],"save":boolean], ["action","id"]),
             tool("folders", "List/create/rename/remove folders or move a saved place/custom layer to a folder. Omit folder_id (or null) to unfile. Removing a folder preserves its contents.", ["action":action(["list","create","rename","remove","move_place","move_layer"]),"id":string,"name":string,"folder_id":["type":["string","null"]]], ["action"]),
             tool("source_dates", "List publisher update, catalog edit, checked and local file modified dates separately. Null means not supplied. Map/imagery sources often do not publish a global update date. Refresh starts asynchronous metadata checks; poll list afterward.", ["action":action(["list","refresh"])], ["action"])
@@ -24,12 +24,12 @@ import Foundation
     }
     func publicDataState(_ s: EarthStore) -> [[String: Any]] {
         PublicDataSource.starters.map { source in
-            ["kind":source.kind.rawValue,"name":source.title,"publisher":source.publisher,"coverage":source.coverage,"terms":source.terms,"url":source.serviceURL.absoluteString,"enabled":s.publicDataEnabled.contains(source.kind),"visible":!s.publicDataHidden.contains(source.kind),"opacity":s.publicDataOpacity[source.kind] ?? 0.7,"loading":s.publicDataLoading.contains(source.kind),"status":s.publicDataStatus[source.kind] ?? "Not loaded","partial":s.publicDataSnapshots[source.kind]?.partial ?? false,"features":(s.publicDataSnapshots[source.kind]?.features ?? []).map { ["id":$0.id,"attributes":$0.attributes] as [String: Any] },"dates":Self.freshnessState(s.sourceFreshness[source.id])] as [String: Any]
+            ["kind":source.kind.rawValue,"name":source.title,"publisher":source.publisher,"coverage":source.coverage,"terms":source.terms,"url":source.serviceURL.absoluteString,"enabled":s.publicDataEnabled.contains(source.kind),"visible":!s.publicDataHidden.contains(source.kind),"opacity":s.publicDataOpacity[source.kind] ?? 0.7,"loading":s.publicDataLoading.contains(source.kind),"status":s.publicDataStatus[source.kind] ?? "Not loaded","partial":s.publicDataSnapshots[source.kind]?.partial ?? false,"styling_notice":s.publicDataSnapshots[source.kind]?.stylingNotice as Any? ?? NSNull(),"legend":(s.publicDataSnapshots[source.kind]?.legend ?? []).map { ["label":$0.label,"fill":$0.style.fill,"stroke":$0.style.stroke,"fill_opacity":$0.style.fillOpacity] as [String: Any] },"features":(s.publicDataSnapshots[source.kind]?.features ?? []).map { ["id":$0.id,"attributes":$0.attributes] as [String: Any] },"dates":Self.freshnessState(s.sourceFreshness[source.id])] as [String: Any]
         }
     }
     func customDataState(_ s: EarthStore) -> [String: Any] {
         ["layers":s.customDataLayers.map { layer in
-            ["id":layer.id.uuidString,"name":layer.name,"folder_id":layer.folderID?.uuidString as Any? ?? NSNull(),"category":layer.category.rawValue,"format":layer.format.rawValue,"url":layer.url?.absoluteString as Any? ?? NSNull(),"enabled":layer.enabled,"loading":s.customDataLoading.contains(layer.id),"status":s.customDataStatus[layer.id] ?? "Not loaded","partial":layer.partial ?? false,"geometry_count":layer.url == nil ? layer.features.count : s.customDataSnapshots[layer.id]?.count ?? 0,"dates":Self.freshnessState(s.sourceFreshness[layer.id.uuidString] ?? SourceFreshness(providerUpdatedAt:layer.providerUpdatedAt,checkedAt:layer.checkedAt,status:"No verified publisher timestamp unless supplied")),"file_modified_at":Self.dataDate(layer.fileModifiedAt)] as [String: Any]
+            ["id":layer.id.uuidString,"name":layer.name,"folder_id":layer.folderID?.uuidString as Any? ?? NSNull(),"category":layer.category.rawValue,"format":layer.format.rawValue,"url":layer.url?.absoluteString as Any? ?? NSNull(),"enabled":layer.enabled,"loading":s.customDataLoading.contains(layer.id),"status":s.customDataStatus[layer.id] ?? "Not loaded","partial":layer.partial ?? false,"geometry_count":layer.url == nil ? layer.features.count : s.customDataSnapshots[layer.id]?.count ?? 0,"dates":Self.freshnessState(s.sourceFreshness[layer.id.uuidString] ?? SourceFreshness(providerUpdatedAt:layer.providerUpdatedAt,checkedAt:layer.checkedAt,status:"No verified publisher timestamp unless supplied")),"styling_notice":layer.stylingNotice as Any? ?? NSNull(),"legend":(layer.legend ?? []).map { ["label":$0.label,"fill":$0.style.fill,"stroke":$0.style.stroke,"fill_opacity":$0.style.fillOpacity] as [String: Any] },"file_modified_at":Self.dataDate(layer.fileModifiedAt)] as [String: Any]
         },"import_running":s.customDataImporting,"import_error":s.customDataImportError as Any? ?? NSNull(),"last_imported_id":s.customDataLastImportedID?.uuidString as Any? ?? NSNull(),"categories":CustomDataCategory.allCases.map { ["id":$0.rawValue,"name":$0.title] }]
     }
     func dataFeatureState(_ s: EarthStore) throws -> [String: Any] {
@@ -38,7 +38,7 @@ import Foundation
     func sourceDatesState(_ s: EarthStore) -> [[String: Any]] {
         var result = PublicDataSource.starters.map { source in Self.freshnessState(s.sourceFreshness[source.id]).merging(["id":source.id,"name":source.title]) { _, new in new } }
         result += s.customDataLayers.map { layer in
-            Self.freshnessState(s.sourceFreshness[layer.id.uuidString] ?? SourceFreshness(providerUpdatedAt:layer.providerUpdatedAt,checkedAt:layer.checkedAt,status:"Not supplied unless source publishes a dataset timestamp")).merging(["id":layer.id.uuidString,"name":layer.name,"file_modified_at":Self.dataDate(layer.fileModifiedAt)]) { _, new in new }
+            Self.freshnessState(s.sourceFreshness[layer.id.uuidString] ?? SourceFreshness(providerUpdatedAt:layer.providerUpdatedAt,checkedAt:layer.checkedAt,status:"Not supplied unless source publishes a dataset timestamp")).merging(["id":layer.id.uuidString,"name":layer.name,"styling_notice":layer.stylingNotice as Any? ?? NSNull(),"legend":(layer.legend ?? []).map { ["label":$0.label,"fill":$0.style.fill,"stroke":$0.style.stroke,"fill_opacity":$0.style.fillOpacity] as [String: Any] },"file_modified_at":Self.dataDate(layer.fileModifiedAt)]) { _, new in new }
         }
         result += s.discoveredData.map { ["id":$0.id,"name":$0.name,"provider_updated_at":NSNull(),"catalog_edited_at":Self.dataDate($0.modifiedAt),"status":"ArcGIS catalog modification; not a dataset update date"] as [String:Any] }
         for name in ["Apple Maps","Google Maps & photorealistic 3D","OpenStreetMap","Esri World Imagery","NASA GIBS","Esri Wayback","USGS earthquakes","Wikimedia photos","Wikipedia places","Open-Meteo elevation","NASA cloud cover","Natural Earth & bundled terrain"] {
@@ -60,6 +60,34 @@ import Foundation
         let action = try text("action")
         switch name {
         case "data_discovery":
+            if action == "catalog" {
+                let query = a["query"] as? String ?? ""
+                guard a["query"] == nil || a["query"] is String, query.count <= 200 else { throw invalid("Catalog query must be a string of up to 200 characters") }
+                func integer(_ key: String, fallback: Int, range: ClosedRange<Int>) throws -> Int {
+                    guard let raw = a[key] else { return fallback }
+                    guard let number = raw as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+                          number.doubleValue.isFinite, number.doubleValue.rounded() == number.doubleValue,
+                          number.doubleValue >= Double(range.lowerBound), number.doubleValue <= Double(range.upperBound) else { throw invalid("Invalid catalog \(key)") }
+                    return number.intValue
+                }
+                let offset = try integer("offset", fallback: 0, range: 0...100_000)
+                let limit = try integer("limit", fallback: 30, range: 1...100)
+                let page = try await CatalogDataIndex.shared.search(query: query, region: s.placeDataRegion, offset: offset, limit: limit)
+                return ["total": page.total, "catalog_count": page.catalogCount, "offset": offset, "sources": page.records.map { source -> [String: Any] in
+                    ["id": source.id, "name": source.name, "publisher": source.publisher, "geography": source.geography, "topic": source.topic,
+                     "url": source.url.absoluteString, "source_url": source.sourceURL.absoluteString, "format": source.connectionFormat?.rawValue as Any? ?? NSNull(),
+                     "kind": source.kind, "category": source.category.rawValue, "access": source.access, "terms_excerpt": source.terms,
+                     "workbook_check": source.verification, "workbook": source.workbook, "sheet": source.sheet, "row": source.row,
+                     "workbook_sha256": source.workbookSHA256, "indexed_on": source.indexedOn, "provider_updated_at": NSNull(),
+                     "workbook_modified": source.workbookModified as Any? ?? NSNull()]
+                }]
+            }
+            if action == "catalog_layers" {
+                let serviceID = try text("service_id")
+                guard let source = try await CatalogDataIndex.shared.source(id: serviceID), let service = source.service else { throw invalid("Unknown or unsupported catalog service ID") }
+                let layers = try await PlaceDataDiscoveryService.shared.layers(in: service)
+                return ["service_id": serviceID, "source_url": source.sourceURL.absoluteString, "layers": layers.map { ["id": $0.id, "name": $0.name, "url": $0.url.absoluteString] as [String: Any] }]
+            }
             guard ["list", "refresh", "follow_map", "area", "service_layers"].contains(action) else { throw invalid("Unknown discovery action") }
             if a["query"] != nil, !["refresh", "follow_map", "area"].contains(action) { throw invalid("Use refresh, follow_map or area when setting a discovery query") }
             if let raw = a["query"] {
@@ -139,7 +167,8 @@ import Foundation
                 guard !s.customDataImporting else { throw invalid("An import is already running") }
                 let path = try text("path"), category = try category()
                 let url = URL(fileURLWithPath:path)
-                guard path.hasPrefix("/"),["kml","kmz","geojson","json"].contains(url.pathExtension.lowercased()),(try? url.resourceValues(forKeys:[.isRegularFileKey]).isRegularFile) == true else { throw invalid("Expected an existing absolute KML, KMZ or GeoJSON file path") }
+                let fileValues = try? url.resourceValues(forKeys:[.isRegularFileKey,.isDirectoryKey])
+                guard path.hasPrefix("/"), fileValues?.isDirectory == true || (["kml","kmz","geojson","json","shp","zip"].contains(url.pathExtension.lowercased()) && fileValues?.isRegularFile == true) else { throw invalid("Expected an existing absolute KML, KMZ, GeoJSON, SHP, shapefile ZIP or dataset folder path") }
                 guard s.customDataWritable,s.customDataLayers.count < 8 else { throw invalid("Custom layer file unavailable or eight-layer limit reached") }
                 let before = s.customDataLayers.map { $0.id.uuidString }; s.importCustomDataFile(url,category:category)
                 return ["accepted":s.customDataImporting,"before_ids":before,"state":customDataState(s)]

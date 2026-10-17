@@ -62,5 +62,8 @@ struct PublicDataSnapshot: Equatable {
     let bounds: PublicDataBounds
     let features: [PublicDataFeature]
     let partial: Bool
+    var vectors: [EarthFeature] = []
+    var legend: [LayerLegendEntry] = []
+    var stylingNotice: String?
     var vertexCount: Int { features.reduce(0) { $0 + $1.rings.reduce(0) { $0 + $1.count } } }
 }

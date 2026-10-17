@@ -59,6 +59,10 @@ struct GoogleMapCanvas: NSViewRepresentable {
         var ready = false
         var lastPayload = ""
         var lastLayers = ""
+        var geometryFeatures: [EarthFeature]?
+        var geometryVertices: [GeoPoint] = []
+        var geometryTool: EarthTool?
+        var geometryRevision = UUID()
         var publicDataRevision: UUID?
         var imageRevision: UUID?
         init(store: EarthStore) { self.store = store }
@@ -69,10 +73,11 @@ struct GoogleMapCanvas: NSViewRepresentable {
             guard ready else { return }
             if publicDataRevision != store.publicDataRevision {
                 publicDataRevision = store.publicDataRevision
-                let items: [[String: Any]] = store.publicDataFeatures.map { feature in
-                    ["id": feature.id, "kind": feature.kind.rawValue,
-                     "color": PublicDataSource.source(feature.kind).color, "opacity": store.publicDataOpacity[feature.kind] ?? 0.9,
-                     "rings": feature.rings.map { PublicDataGeometry.closed($0).map { ["lat": $0.latitude, "lng": $0.longitude] } }]
+                let items: [[String: Any]] = store.publicDataVectors.map { kind, feature in
+                    let style = feature.vectorStyle ?? VectorStyle()
+                    return ["id":feature.sourceID ?? "", "kind":kind.rawValue, "color":style.stroke,"opacity":style.strokeOpacity,
+                            "fill":style.fill,"fillOpacity":style.fillOpacity,"width":style.width,
+                            "rings":([feature.points]+(feature.holes ?? [])).map { $0.map { ["lat":$0.latitude,"lng":$0.longitude] } }]
                 }
                 if let data = try? JSONSerialization.data(withJSONObject: items), let json = String(data: data, encoding: .utf8) {
                     web?.evaluateJavaScript("window.earthPublicData(\(json));", completionHandler: nil)
@@ -100,20 +105,26 @@ struct GoogleMapCanvas: NSViewRepresentable {
                 }
             }
             let features = store.renderedFeatures
-            let encoder = JSONEncoder()
-            guard let featureData = try? encoder.encode(features), var featureJSON = (try? JSONSerialization.jsonObject(with: featureData)) as? [[String: Any]],
-                  let verticesData = try? encoder.encode(store.vertices), let verticesJSON = try? JSONSerialization.jsonObject(with: verticesData) else { return }
-            for index in features.indices where features[index].kind == .point {
-                featureJSON[index]["pinImage"] = EarthPinAppearance.dataURL(features[index])
-                featureJSON[index]["pinAnchorY"] = EarthPinAppearance.anchor(features[index]).y
+            var geometryPayload: [String:Any] = [:]
+            if geometryFeatures != features || geometryVertices != store.vertices || geometryTool != store.tool {
+                let encoder = JSONEncoder()
+                guard let featureData = try? encoder.encode(features), var featureJSON = (try? JSONSerialization.jsonObject(with:featureData)) as? [[String:Any]],
+                      let verticesData = try? encoder.encode(store.vertices), let verticesJSON = try? JSONSerialization.jsonObject(with:verticesData) else { return }
+                for index in features.indices where features[index].kind == .point {
+                    featureJSON[index]["pinImage"] = EarthPinAppearance.dataURL(features[index])
+                    featureJSON[index]["pinAnchorY"] = EarthPinAppearance.anchor(features[index]).y
+                }
+                geometryFeatures = features; geometryVertices = store.vertices; geometryTool = store.tool; geometryRevision = UUID()
+                geometryPayload = ["features":featureJSON,"vertices":verticesJSON]
             }
             var payload: [String: Any] = ["lat": store.latitude, "lng": store.longitude, "distance": store.distance, "heading": store.heading, "pitch": store.terrain ? store.pitch : 0,
                 "camera": store.cameraRequest.uuidString, "style": store.mapStyle == .streets ? "roadmap" : (store.mapStyle == .hybrid ? "hybrid" : "satellite"),
-                "features": featureJSON, "vertices": verticesJSON, "drawing": store.tool != .navigate, "tool": store.tool.rawValue,
+                "geometryRevision":geometryRevision.uuidString, "drawing": store.tool != .navigate, "tool": store.tool.rawValue,
                 "images": store.imageOverlays.contains(where: \.isVisible),
                 "buildings": store.layers.primary && store.layers.buildings, "archive": store.historicalImagery,
                 "groundAltitude": max(0, EarthTerrain.sampledElevation(store.center) ?? 0),
                 "street": store.streetView, "streetRequest": store.streetRequest.uuidString]
+            payload.merge(geometryPayload) { _, new in new }
             if let query = store.googleQuery { payload["query"] = ["id": query.id.uuidString, "text": query.text] }
             guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]), let json = String(data: data, encoding: .utf8), json != lastPayload else { return }
             lastPayload = json
@@ -124,7 +135,7 @@ struct GoogleMapCanvas: NSViewRepresentable {
                   let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
             switch type {
             case "ready":
-                ready = true; store.googleError = nil; store.googleReady = true
+                geometryFeatures = nil; ready = true; store.googleError = nil; store.googleReady = true
                 store.status = "Google Maps · Drag to explore · Pegman opens Street View"; update()
             case "error":
                 store.streetView = false

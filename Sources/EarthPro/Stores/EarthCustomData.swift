@@ -15,7 +15,7 @@ import UniformTypeIdentifiers
             guard data.count <= 40 * 1_024 * 1_024 else { throw CustomDataError.tooLarge }
             let saved = try JSONDecoder().decode([CustomDataLayer].self, from: data)
             guard saved.count <= 8, Set(saved.map(\.id)).count == saved.count,
-                  saved.allSatisfy({ layer in layer.features.count <= 300 && layer.features.allSatisfy(\.isValid) && layer.features.reduce(0, { $0 + $1.points.count }) <= 16_000 }) else { throw CustomDataError.invalidGeometry }
+                  saved.allSatisfy({ layer in layer.features.count <= 300 && layer.features.allSatisfy(\.isValid) && layer.features.reduce(0, { $0 + $1.vertexCount }) <= 16_000 }) else { throw CustomDataError.invalidGeometry }
             for layer in saved { if let url = layer.url { try CustomDataService.validateURL(url, format: layer.format) } }
             customDataLayers = saved
             for layer in saved { customDataStatus[layer.id] = layer.url == nil ? "\(layer.features.count) imported geometries" + (layer.partial == true ? " · Partial import; some geometry omitted" : "") : "Saved connection · Refresh this view to load" }
@@ -75,8 +75,10 @@ import UniformTypeIdentifiers
                 guard !Task.isCancelled, customDataGenerations[id] == generation, let index = customDataLayers.firstIndex(where: { $0.id == id && $0.enabled }) else { return }
                 let colors: [CustomDataCategory: String] = [.water: "#53B8F6", .sewer: "#E59555", .stormwater: "#55D4C5", .electricity: "#F5C542", .gas: "#FF6B5E", .telecommunications: "#C49BFF"]
                 customDataSnapshots[id] = result.features.map { feature in
-                    var feature = feature; if let color = colors[layer.category] { feature.color = color }; return feature
+                    var feature = feature; if feature.vectorStyle == nil, let color = colors[layer.category] { feature.color = color }; return feature
                 }
+                customDataLayers[index].legend = result.legend
+                customDataLayers[index].stylingNotice = result.stylingNotice
                 customDataLayers[index].partial = result.partial
                 customDataLayers[index].providerUpdatedAt = result.providerUpdatedAt
                 customDataLayers[index].checkedAt = Date()
@@ -92,9 +94,9 @@ import UniformTypeIdentifiers
         fly(to: framing.center, distance: framing.distance, detail: mode == .map)
     }
     func importCustomData(category: CustomDataCategory = .other) {
-        let panel = NSOpenPanel(); panel.allowsMultipleSelection = false; panel.canChooseDirectories = false
-        panel.allowedContentTypes = ["kml", "kmz", "geojson", "json"].compactMap { UTType(filenameExtension: $0) }
-        panel.message = "Import a custom vector layer (KML, KMZ or GeoJSON)."
+        let panel = NSOpenPanel(); panel.allowsMultipleSelection = false; panel.canChooseDirectories = true
+        panel.allowedContentTypes = ["kml", "kmz", "geojson", "json", "shp", "zip"].compactMap { UTType(filenameExtension: $0) }
+        panel.message = "Import KML, KMZ, GeoJSON, or a shapefile ZIP/folder containing SHP, DBF and PRJ sidecars."
         guard panel.runModal() == .OK, let url = panel.url else { return }
         importCustomDataFile(url, category: category)
     }
@@ -110,11 +112,13 @@ import UniformTypeIdentifiers
                     let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }
                     let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
                     let result: CustomDataResult
-                    if ["kml", "kmz"].contains(url.pathExtension.lowercased()) {
+                    if ["shp", "zip"].contains(url.pathExtension.lowercased()) || (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+                        result = try ShapefileService.read(url)
+                    } else if ["kml", "kmz"].contains(url.pathExtension.lowercased()) {
                         let imported = try KMLService.read(url)
                         var count = 0, items: [EarthFeature] = []
                         for feature in imported.features where items.count < 300 {
-                            if count + feature.points.count <= 16_000 { items.append(feature); count += feature.points.count }
+                            if count + feature.vertexCount <= 16_000 { items.append(feature); count += feature.vertexCount }
                         }
                         result = .init(features: items, providerUpdatedAt: nil, partial: imported.skipped > 0 || items.count < imported.features.count)
                     } else {
@@ -124,7 +128,7 @@ import UniformTypeIdentifiers
                     return (result, values.contentModificationDate)
                 }.value
                 guard !result.0.features.isEmpty else { throw KMLError.invalid("No supported geometry fits within the layer limits.") }
-                let layer = CustomDataLayer(name: url.deletingPathExtension().lastPathComponent, folderID: folders.contains(where: { $0.id == destinationFolder }) ? destinationFolder : nil, category: category, features: result.0.features, checkedAt: Date(), fileModifiedAt: result.1, partial: result.0.partial)
+                let layer = CustomDataLayer(name: url.deletingPathExtension().lastPathComponent, folderID: folders.contains(where: { $0.id == destinationFolder }) ? destinationFolder : nil, category: category, features: result.0.features, checkedAt: Date(), fileModifiedAt: result.1, partial: result.0.partial, legend: result.0.legend, stylingNotice: result.0.stylingNotice)
                 customDataLayers.append(layer)
                 customDataLastImportedID = layer.id
                 customDataStatus[layer.id] = "\(layer.features.count) imported geometries" + (result.0.partial ? " · Partial import; some geometry omitted" : "")

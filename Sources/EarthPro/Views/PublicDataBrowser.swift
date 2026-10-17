@@ -81,6 +81,7 @@ struct PublicDataBrowser: View {
                         Button("Manage saved layers and connections…") { store.showPublicData = false; store.showCustomData = true }
                     } else {
                         discoveredServices
+                        CatalogDataSection(store: store)
                         directory
                         DisclosureGroup("Reference layers for this area") {
                             ForEach(starters, id: \.kind) { PublicDataSourceCard(store: store, source: $0) }
@@ -287,9 +288,10 @@ struct PublicDataDetailView: View {
 }
 
 
-private struct DiscoveredServiceView: View {
+struct DiscoveredServiceView: View {
     @ObservedObject var store: EarthStore
     let service: DiscoveredDataService
+    var initialCategory: CustomDataCategory = .other
     @Environment(\.dismiss) private var dismiss
     @State private var layers: [DiscoveredDataLayer] = []
     @State private var loading = true
@@ -322,6 +324,7 @@ private struct DiscoveredServiceView: View {
         }.padding(20).frame(width: 500, height: 420)
             .task {
                 do {
+                    category = initialCategory
                     layers = try await PlaceDataDiscoveryService.shared.layers(in: service)
                     if layers.isEmpty { message = "No supported vector layers listed. Open the publisher’s source for details." }
                 } catch { message = error.localizedDescription }

@@ -579,6 +579,11 @@ import UniformTypeIdentifiers
         guard panel.runModal() == .OK else { return }; importURLs(panel.urls)
     }
     func importURLs(_ urls: [URL]) {
+        let vectors = urls.filter { ["shp","zip","geojson","json"].contains($0.pathExtension.lowercased()) || $0.hasDirectoryPath }
+        if !vectors.isEmpty {
+            guard urls.count == 1, let url = vectors.first else { error = "Import one custom vector dataset at a time. KML/KMZ place files can still be opened together."; return }
+            importCustomDataFile(url); return
+        }
         guard !busy else { return }; busy = true; status = "Importing places…"
         let destinationFolder = selectedFolderID
         Task {

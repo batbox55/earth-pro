@@ -61,7 +61,7 @@ window.earth3D = (() => {
     map.append(element); return element;
   }
   function drawGeometry() {
-    const signature = JSON.stringify([state.features, state.vertices, state.tool]);
+    const signature = state.geometryRevision;
     if (signature === geometry) return;
     geometry = signature; shapes.forEach(x => x.remove()); shapes = [];
     for (const f of state.features) {

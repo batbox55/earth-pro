@@ -89,24 +89,29 @@ window.earthLayers=l=>{
   document.getElementById('layer-credit').textContent=[l.archiveCredit||'',e.borders||e.labels||e.water||e.parks||e.transit?'Boundaries / places: Natural Earth':'',e.wikipedia?'Articles: Wikipedia contributors · CC BY-SA 4.0':'',e.photos?'Photos: Wikimedia Commons':'',e.earthquakes?'Earthquakes: USGS':'',e.clouds?'Cloud fraction: NASA MODIS '+l.cloudDate:''].filter(Boolean).join(' · ');
   if(state){applyLayerOptions(state);window.earth3D?.update(state,layerState);}
 };
+function polygonPaths(rings){
+  if(!rings.length)return [];
+  const area=r=>r.reduce((sum,p,i)=>{const q=r[(i+1)%r.length];let dl=q.lng-p.lng;while(dl>180)dl-=360;while(dl< -180)dl+=360;return sum+dl*(q.lat+p.lat);},0);
+  const outerSign=Math.sign(area(rings[0]));
+  return rings.map((r,i)=>i&&Math.sign(area(r))===outerSign?[...r].reverse():r);
+}
 window.earthPublicData=items=>{
   publicDataOverlays.forEach(line=>{google.maps.event.clearInstanceListeners(line);line.setMap(null);});publicDataOverlays=[];
   if(!map)return;
   for(const feature of items){
-    for(const path of feature.rings){
-      if(path.length<2)continue;
-      const line=new google.maps.Polyline({map,path,strokeColor:feature.color,strokeOpacity:feature.opacity,strokeWeight:2,geodesic:true,zIndex:20});
-      line.addListener('click',event=>{
-        if(state?.drawing&&event.latLng)send('pick',{lat:event.latLng.lat(),lng:event.latLng.lng()});
-        else send('publicDataSelect',{id:feature.id,kind:feature.kind});
-      });
-      publicDataOverlays.push(line);
-    }
+    const line=new google.maps.Polygon({map,paths:polygonPaths(feature.rings),strokeColor:feature.color,strokeOpacity:feature.opacity,strokeWeight:feature.width,fillColor:feature.fill,fillOpacity:feature.fillOpacity,geodesic:true,zIndex:20});
+    line.addListener('click',event=>{
+      if(state?.drawing&&event.latLng)send('pick',{lat:event.latLng.lat(),lng:event.latLng.lng()});
+      else send('publicDataSelect',{id:feature.id,kind:feature.kind});
+    });
+    publicDataOverlays.push(line);
   }
 };
 window.earthRestore2D = () => { window.requestAnimationFrame(()=>{ if(window.earth3D?.active)return; google.maps.event.trigger(map,"resize"); camera=""; if(state)window.earthUpdate(state); }); };
 window.earthUpdate = s => {
   if(!map) return;
+  s.features=s.features??state?.features??[];
+  s.vertices=s.vertices??state?.vertices??[];
   state=s;
   const was3D=window.earth3D?.active;
   window.earth3D?.update(s,layerState);
@@ -117,15 +122,16 @@ window.earthUpdate = s => {
     camera=s.camera;
     map.moveCamera({center:{lat:s.lat,lng:s.lng},zoom:Math.max(1,Math.min(21,Math.log2(156543.03392*Math.cos(s.lat*Math.PI/180)*Math.max(1,document.getElementById('map').clientHeight)/s.distance))),heading:s.heading,tilt:s.pitch});
   }
-  const next=JSON.stringify([s.features,s.vertices,s.tool]);
+  const next=s.geometryRevision;
   if(geometry!==next){
     geometry=next; overlays.forEach(x=>x.setMap(null)); overlays=[];
     for(const f of s.features){
       const path=f.points.map(p=>({lat:p.latitude,lng:p.longitude}));
-      const options={map,strokeColor:f.color,strokeOpacity:1,strokeWeight:3,geodesic:true};
+      const style=f.vectorStyle;
+      const options={map,strokeColor:style?.stroke??f.color,strokeOpacity:style?.strokeOpacity??1,strokeWeight:style?.width??3,geodesic:true};
       let overlay;
       if(f.kind==='point') overlay=new google.maps.Marker({map,position:path[0],title:f.name,icon:{url:f.pinImage,scaledSize:new google.maps.Size(40,48),anchor:new google.maps.Point(20,f.pinAnchorY ?? 45)}});
-      else if(f.kind==='polygon') overlay=new google.maps.Polygon({...options,paths:path,fillColor:f.color,fillOpacity:.22});
+      else if(f.kind==='polygon') overlay=new google.maps.Polygon({...options,paths:polygonPaths([path,...(f.holes??[]).map(r=>r.map(p=>({lat:p.latitude,lng:p.longitude})))]),fillColor:style?.fill??f.color,fillOpacity:style?.fillOpacity??.22});
       else overlay=new google.maps.Polyline({...options,path});
       overlay.addListener('click',event=>{if(state.drawing&&event.latLng)send('pick',{lat:event.latLng.lat(),lng:event.latLng.lng()});else send('select',{id:f.id});});
       overlays.push(overlay);

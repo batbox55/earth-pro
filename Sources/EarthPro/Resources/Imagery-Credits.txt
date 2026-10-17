@@ -53,3 +53,5 @@ https://github.com/tilezen/joerd/blob/master/docs/attribution.md
 Parks and transportation: Natural Earth public-domain 1:10m parks/protected lands (387 U.S. NPS units in bundled dataset, with point/line/area features) and 893 selected airports worldwide. Park marker positions derived from area/line geometry are approximate. Generalized data, not for navigation.
 https://www.naturalearthdata.com/downloads/10m-cultural-vectors/parks-and-protected-lands/
 https://www.naturalearthdata.com/downloads/10m-cultural-vectors/airports/
+
+Additional source catalog: Open_Geospatial_Catalog_v4.xlsx, user-supplied, indexed 2026-10-17. SHA256 72a74e9e0b33dc9032a94b88c195dd9b54ae6519ec4a3603b95fb49. Entries retain sheet/row, publisher links, workbook check labels, and terms excerpts. Catalog inclusion is not current verification, geographic coverage, dataset freshness, or permission for commercial reuse. Actual geometry remains with its publisher and loads only after a compatible source is selected.

@@ -16,6 +16,7 @@ final class PublicDataTests: XCTestCase {
         let data = Data(#"{"type":"FeatureCollection","exceededTransferLimit":true,"features":[{"type":"Feature","id":7,"properties":{"OBJECTID":7},"geometry":{"type":"MultiPolygon","coordinates":[[[[-118,33],[-117,33],[-117,34],[-118,33]],[[-117.9,33.1],[-117.8,33.1],[-117.8,33.2],[-117.9,33.1]]],[[[-117.7,33.3],[-117.6,33.3],[-117.6,33.4],[-117.7,33.3]]]]}}]}"#.utf8)
         let snapshot = try PublicDataService.decode(data, kind: .parcels, bounds: bounds)
         XCTAssertEqual(snapshot.features.count, 1); XCTAssertEqual(snapshot.features[0].rings.count, 3)
+        XCTAssertEqual(snapshot.vectors.count, 2); XCTAssertEqual(snapshot.vectors.first?.holes?.count, 1); XCTAssertFalse(snapshot.legend.isEmpty)
         XCTAssertEqual(snapshot.vertexCount, 12); XCTAssertTrue(snapshot.partial)
         XCTAssertThrowsError(try PublicDataService.decode(Data(#"{"type":"FeatureCollection","crs":{"properties":{"name":"EPSG:2230"}},"features":[]}"#.utf8), kind: .parcels, bounds: bounds))
     }

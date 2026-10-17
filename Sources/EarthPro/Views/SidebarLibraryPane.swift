@@ -163,6 +163,7 @@ struct SidebarLibraryPane: View {
     }
 
     private func layerRow(_ layer: CustomDataLayer) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
         HStack(spacing: 7) {
             Toggle("Show \(layer.name)", isOn: Binding(get: { store.customDataLayers.first { $0.id == layer.id }?.enabled ?? false }, set: { store.setCustomDataEnabled(layer.id, enabled: $0) }))
                 .labelsHidden().toggleStyle(.checkbox)
@@ -174,6 +175,8 @@ struct SidebarLibraryPane: View {
                 }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
             }.buttonStyle(.plain)
             if store.customDataLoading.contains(layer.id) { ProgressView().controlSize(.mini) }
+        }
+        LayerLegendView(entries: layer.legend ?? [], notice: layer.stylingNotice).padding(.leading, 22)
         }.padding(.leading, 28).padding(.trailing, 8).padding(.vertical, 7)
             .contextMenu {
                 Button("Zoom to Layer") { store.zoomToCustomData(layer) }

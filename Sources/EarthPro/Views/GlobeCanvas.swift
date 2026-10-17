@@ -3,7 +3,7 @@ import SceneKit
 import simd
 import AppKit
 
-private func spherePosition(_ point: GeoPoint, radius: Float = 1) -> SCNVector3 {
+func spherePosition(_ point: GeoPoint, radius: Float = 1) -> SCNVector3 {
     let lat = Float(point.latitude * .pi / 180), lon = Float(point.longitude * .pi / 180)
     return SCNVector3(radius * cos(lat) * sin(lon), radius * sin(lat), radius * cos(lat) * cos(lon))
 }
@@ -150,6 +150,10 @@ struct GlobeCanvas: NSViewRepresentable {
         return view
     }
     func updateNSView(_ view: InteractiveGlobe, context: Context) { view.window?.acceptsMouseMovedEvents = true; context.coordinator.update(view) }
+    static func dismantleNSView(_ view: InteractiveGlobe, coordinator: Coordinator) {
+        coordinator.fillBuildTask?.cancel(); coordinator.publicDataBuild?.cancel()
+        view.renderCamera = nil; view.pickPublicData = nil
+    }
     @MainActor final class Coordinator {
         let store: EarthStore
         let scene = SCNScene(), camera = SCNNode(), overlay = SCNNode(), grid = SCNNode()
@@ -177,6 +181,11 @@ struct GlobeCanvas: NSViewRepresentable {
         var lastCamera: UUID?
         var drawn: [EarthFeature] = [], vertices: [GeoPoint] = []
         var lastCustomTerrain: Bool?
+        let polygonOverlay = SCNNode()
+        var fillFeatures: [EarthFeature] = []
+        var fillTerrain: Bool?
+        var fillGeneration = UUID()
+        var fillBuildTask: Task<[SCNNode], Never>?
         var lastSelection: UUID?
         var lastTool: EarthTool = .navigate
         init(_ store: EarthStore) {
@@ -197,7 +206,7 @@ struct GlobeCanvas: NSViewRepresentable {
             else { material.diffuse.contents = NSColor.systemBlue }
             material.diffuse.wrapS = .repeat; material.diffuse.magnificationFilter = .linear
             earth.geometry?.materials = [material]; scene.rootNode.addChildNode(earth)
-            scene.rootNode.addChildNode(overlay); scene.rootNode.addChildNode(grid)
+            scene.rootNode.addChildNode(overlay); scene.rootNode.addChildNode(polygonOverlay); scene.rootNode.addChildNode(grid)
             [borders, roads, water, parks, labels, cities, dataMarkers, clouds, archive, sunlight, ambient].forEach { scene.rootNode.addChildNode($0) }
             makeGrid(); makeStars()
             borders.addChildNode(lineNode(borderSegments(EarthBaseData.countries.flatMap(\.outlines)), color: NSColor(srgbRed: 1, green: 0.86, blue: 0.35, alpha: 0.8), radius: 1.003))
@@ -318,18 +327,48 @@ struct GlobeCanvas: NSViewRepresentable {
                 node.position = spherePosition(feature.center, radius: Float(1 + elevation / GeoMath.radius + 0.000005))
                 overlay.addChildNode(node)
             } else {
-                var points = feature.points
-                if feature.kind == .polygon, let first = points.first { points.append(first) }
-                var segments: [GeoPoint] = []
-                for (a, b) in zip(points, points.dropFirst()) {
-                    let dl = GeoMath.normalizedLongitude(b.longitude - a.longitude)
-                    let count = max(1, min(180, Int(GeoMath.distance(a, b) / 80_000) + 1))
-                    for i in 0..<count {
-                        let t1 = Double(i) / Double(count), t2 = Double(i + 1) / Double(count)
-                        segments += [.init(latitude: a.latitude + (b.latitude - a.latitude) * t1, longitude: a.longitude + dl * t1), .init(latitude: a.latitude + (b.latitude - a.latitude) * t2, longitude: a.longitude + dl * t2)]
+                let style = feature.vectorStyle
+                let stroke = style.map { NSColor(earthHex:$0.stroke).withAlphaComponent($0.strokeOpacity) } ?? color
+                guard style?.width != 0, style?.strokeOpacity != 0 else { return }
+                for ring in [feature.points] + (feature.holes ?? []) {
+                    var points = ring
+                    if feature.kind == .polygon, points.first != points.last, let first = points.first { points.append(first) }
+                    var segments: [GeoPoint] = []
+                    for (a,b) in zip(points,points.dropFirst()) {
+                        let dl = GeoMath.normalizedLongitude(b.longitude-a.longitude)
+                        let count = max(1,min(180,Int(GeoMath.distance(a,b)/80_000)+1))
+                        for i in 0..<count {
+                            let t1 = Double(i)/Double(count), t2 = Double(i+1)/Double(count)
+                            segments += [.init(latitude:a.latitude+(b.latitude-a.latitude)*t1,longitude:a.longitude+dl*t1),.init(latitude:a.latitude+(b.latitude-a.latitude)*t2,longitude:a.longitude+dl*t2)]
+                        }
                     }
+                    overlay.addChildNode(lineNode(segments,color:stroke,grounded:grounded))
                 }
-                overlay.addChildNode(lineNode(segments, color: color, grounded: grounded))
+            }
+        }
+        func updatePolygonFills(_ features: [EarthFeature]) {
+            let polygons = features.filter { $0.kind == .polygon }
+            guard fillFeatures != polygons || fillTerrain != store.terrain else { return }
+            fillFeatures = polygons; fillTerrain = store.terrain
+            fillBuildTask?.cancel(); polygonOverlay.childNodes.forEach { $0.removeFromParentNode() }
+            let generation = UUID(); fillGeneration = generation
+            let terrain = store.terrain
+            // All visible layers share a 32 MiB texture budget, independent of zoom.
+            let size = min(512,max(8,Int(sqrt(Double(32*1024*1024)/Double(max(1,polygons.count)*4)))))
+            let segments = min(64,max(2,Int(sqrt(120_000.0/Double(max(1,polygons.count))))-1))
+            let task = Task.detached(priority:.utility) { () -> [SCNNode] in
+                var nodes: [SCNNode] = []
+                for feature in polygons {
+                    if Task.isCancelled { return [] }
+                    if let node = GlobePolygonFill.node(feature,terrain:terrain,size:size,maxSegments:segments) { node.name = "feature:"+feature.id.uuidString; nodes.append(node) }
+                }
+                return nodes
+            }
+            fillBuildTask = task
+            Task { [weak self] in
+                let nodes = await task.value
+                guard let self, self.fillGeneration == generation, !task.isCancelled else { return }
+                nodes.forEach { self.polygonOverlay.addChildNode($0) }; self.fillBuildTask = nil
             }
         }
         func labelNode(_ title: String, at point: GeoPoint, color: NSColor) -> SCNNode {
@@ -429,15 +468,21 @@ struct GlobeCanvas: NSViewRepresentable {
                 guard let self, !build.isCancelled, self.publicDataRevision == revision, self.publicDataTerrain == terrain else { return }
                 self.publicDataSegments = segments
                 self.publicDataBuild = nil
-                for kind in PublicDataKind.allCases {
-                    let positions = segments.filter { $0.0.kind == kind }.flatMap { $0.1 }
-                    guard !positions.isEmpty else { continue }
-                    let geometry = SCNGeometry(sources: [.init(vertices: positions)], elements: [.init(indices: Array(0..<Int32(positions.count)), primitiveType: .line)])
+                let vectors = self.store.publicDataVectors
+                var styles: [String:VectorStyle] = [:]
+                for (kind,feature) in vectors { if let id = feature.sourceID, let style = feature.vectorStyle { styles[kind.rawValue+":"+id] = style } }
+                var strokes: [VectorStyle:[SCNVector3]] = [:]
+                for (feature,positions) in segments {
+                    let style = styles[feature.kind.rawValue+":"+feature.id] ?? VectorStyle(stroke:PublicDataSource.source(feature.kind).color,fillOpacity:0)
+                    if style.strokeOpacity > 0, style.width > 0 { strokes[style,default:[]].append(contentsOf:positions) }
+                }
+                for (style,positions) in strokes where !positions.isEmpty {
+                    let geometry = SCNGeometry(sources:[.init(vertices:positions)],elements:[.init(indices:Array(0..<Int32(positions.count)),primitiveType:.line)])
                     let material = SCNMaterial(); material.lightingModel = .constant
-                    material.diffuse.contents = NSColor(earthHex: PublicDataSource.source(kind).color).withAlphaComponent(self.store.publicDataOpacity[kind] ?? 0.9)
+                    material.diffuse.contents = NSColor(earthHex:style.stroke).withAlphaComponent(style.strokeOpacity)
                     material.writesToDepthBuffer = false; material.isDoubleSided = true
                     geometry.materials = [material]
-                    let node = SCNNode(geometry: geometry); node.renderingOrder = 10
+                    let node = SCNNode(geometry:geometry); node.renderingOrder = 10
                     self.publicDataRoot.addChildNode(node)
                 }
             }
@@ -496,6 +541,7 @@ struct GlobeCanvas: NSViewRepresentable {
             updateLayers(view)
             grid.isHidden = !store.grid || !store.layers.primary
             let visible = store.renderedFeatures
+            updatePolygonFills(visible + store.publicDataVectors.map { $0.1 })
             if drawn != visible || vertices != store.vertices || lastSelection != store.selection || lastTool != store.tool || lastCustomTerrain != store.terrain {
                 lastCustomTerrain = store.terrain
                 drawn = visible; vertices = store.vertices; lastSelection = store.selection; lastTool = store.tool

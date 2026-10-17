@@ -35,10 +35,14 @@ struct CustomDataLayer: Codable, Identifiable {
     var checkedAt: Date?
     var fileModifiedAt: Date?
     var partial: Bool?
+    var legend: [LayerLegendEntry]?
+    var stylingNotice: String?
 }
 
 struct CustomDataResult {
     var features: [EarthFeature]
     var providerUpdatedAt: Date?
     var partial: Bool
+    var legend: [LayerLegendEntry] = []
+    var stylingNotice: String?
 }

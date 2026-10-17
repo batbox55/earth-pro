@@ -36,6 +36,30 @@ import XCTest
             XCTAssertEqual(notes["notes"] as? String,"Meter by gate")
         }
     }
+    func testShapefileFolderImportAndLegendPersistThroughMCP() async throws {
+        try await withStore { store, server in
+            let folder = store.libraryURL.deletingLastPathComponent().appendingPathComponent("Zoning")
+            try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)
+            let (shp,dbf) = ShapefileTests.fixture()
+            try shp.write(to:folder.appendingPathComponent("zoning.shp"))
+            try dbf.write(to:folder.appendingPathComponent("zoning.dbf"))
+            try Data(ShapefileTests.wgs.utf8).write(to:folder.appendingPathComponent("zoning.prj"))
+            let accepted = try await call(server,"custom_data",["action":"import_file","path":folder.path])
+            XCTAssertEqual(accepted["accepted"] as? Bool,true)
+            for _ in 0..<200 where store.customDataImporting { try await Task.sleep(for:.milliseconds(10)) }
+            XCTAssertNil(store.customDataImportError)
+            let layer = try XCTUnwrap(store.customDataLayers.first)
+            XCTAssertEqual(layer.features.count,2); XCTAssertEqual(layer.features.first?.holes?.count,1)
+            let state = try await call(server,"custom_data",["action":"list"])
+            let layers = try XCTUnwrap(state["layers"] as? [[String:Any]])
+            XCTAssertEqual((layers.first?["legend"] as? [[String:Any]])?.first?["label"] as? String,"Residential")
+            await store.customDataSaveTask?.value
+            try FileManager.default.removeItem(at:folder)
+            let restored = EarthStore(libraryURL:store.libraryURL)
+            XCTAssertEqual(restored.customDataLayers.first?.features,layer.features)
+            XCTAssertEqual(restored.customDataLayers.first?.legend,layer.legend)
+        }
+    }
     func testLocalImportFolderUtilityCategoryAndDates() async throws {
         try await withStore { s, server in
             try FileManager.default.createDirectory(at:s.libraryURL.deletingLastPathComponent(),withIntermediateDirectories:true)

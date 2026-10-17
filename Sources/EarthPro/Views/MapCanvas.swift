@@ -110,8 +110,10 @@ struct MapCanvas: NSViewRepresentable {
         var lastTool: EarthTool = .navigate
         var lastSelection: UUID?
         var colors: [ObjectIdentifier: NSColor] = [:]
+        var vectorStyles: [ObjectIdentifier: VectorStyle] = [:]
         var publicDataRevision: UUID?
-        var publicDataOverlays: [PublicDataKind: MKMultiPolyline] = [:]
+        var publicDataOverlays: [UUID: MKPolygon] = [:]
+        var publicPolygonStyles: [ObjectIdentifier: VectorStyle] = [:]
         var publicDataDrawn: [PublicDataFeature] = []
         var settingCamera = false
         init(_ store: EarthStore) { self.store = store }
@@ -183,7 +185,7 @@ struct MapCanvas: NSViewRepresentable {
             if drawn != visible || lastVertices != store.vertices || lastTool != store.tool || lastSelection != store.selection || lastLayers != store.layers || lastLayerRevision != store.layerRevision || lastLabelDetail != labelDetail {
                 lastLayers = store.layers; lastLayerRevision = store.layerRevision; lastLabelDetail = labelDetail
                 drawn = visible; lastVertices = store.vertices; lastTool = store.tool; lastSelection = store.selection
-                map.removeAnnotations(map.annotations); map.removeOverlays(map.overlays.filter { overlay in !((overlay is MKTileOverlay) || (overlay is EarthGroundImage) || publicDataOverlays.values.contains(where: { $0 === overlay as AnyObject })) }); colors = [:]
+                map.removeAnnotations(map.annotations); map.removeOverlays(map.overlays.filter { overlay in !((overlay is MKTileOverlay) || (overlay is EarthGroundImage) || publicDataOverlays.values.contains(where: { $0 === overlay as AnyObject })) }); colors = [:]; vectorStyles = [:]
                 let enabled = store.layers.enabled
                 if enabled["borders"] == true {
                     let lines = EarthBaseData.countries.flatMap(\.outlines).map { points -> MKPolyline in
@@ -213,7 +215,7 @@ struct MapCanvas: NSViewRepresentable {
                 for item in store.visibleLayerItems { map.addAnnotation(LayerAnnotation(item)) }
                 for feature in visible {
                     if feature.kind == .point { map.addAnnotation(FeatureAnnotation(feature)) }
-                    else { add(feature.points, polygon: feature.kind == .polygon, color: NSColor(earthHex: feature.color), to: map) }
+                    else { add(feature.points, polygon: feature.kind == .polygon, color: NSColor(earthHex: feature.color), holes: feature.holes ?? [], style: feature.vectorStyle, to: map) }
                 }
                 add(store.vertices, polygon: store.tool == .polygon && store.vertices.count > 2, color: .systemYellow, to: map)
                 for (index, point) in store.vertices.enumerated() {
@@ -234,16 +236,14 @@ struct MapCanvas: NSViewRepresentable {
             publicDataRevision = store.publicDataRevision
             map.removeOverlays(Array(publicDataOverlays.values)); publicDataOverlays.removeAll()
             publicDataDrawn = store.publicDataFeatures
-            for kind in PublicDataKind.allCases {
-                let lines = publicDataDrawn.filter { $0.kind == kind }.flatMap(\.rings).compactMap { ring -> MKPolyline? in
-                    let coordinates = PublicDataGeometry.closed(ring).map(\.coordinate)
-                    guard coordinates.count > 1 else { return nil }
-                    return MKPolyline(coordinates: coordinates, count: coordinates.count)
-                }
-                guard !lines.isEmpty else { continue }
-                let overlay = MKMultiPolyline(lines)
-                publicDataOverlays[kind] = overlay
-                map.addOverlay(overlay, level: .aboveLabels)
+            publicPolygonStyles.removeAll()
+            for (_, feature) in store.publicDataVectors {
+                let coordinates = feature.points.map(\.coordinate)
+                let holes = (feature.holes ?? []).map { ring -> MKPolygon in let c = ring.map(\.coordinate); return MKPolygon(coordinates:c,count:c.count) }
+                let polygon = MKPolygon(coordinates:coordinates,count:coordinates.count,interiorPolygons:holes)
+                publicDataOverlays[feature.id] = polygon
+                publicPolygonStyles[ObjectIdentifier(polygon)] = feature.vectorStyle
+                map.addOverlay(polygon,level:.aboveLabels)
             }
         }
         func pickPublicData(at point: NSPoint, in map: MKMapView) -> Bool {
@@ -260,11 +260,12 @@ struct MapCanvas: NSViewRepresentable {
             guard let closest else { return false }
             store.showPublicDataDetails(closest); return true
         }
-        func add(_ points: [GeoPoint], polygon: Bool, color: NSColor, to map: MKMapView) {
+        func add(_ points: [GeoPoint], polygon: Bool, color: NSColor, holes: [[GeoPoint]] = [], style: VectorStyle? = nil, to map: MKMapView) {
             guard points.count > 1 else { return }
             let coordinates = points.map(\.coordinate)
-            let overlay: MKOverlay = polygon ? MKPolygon(coordinates: coordinates, count: coordinates.count) : MKGeodesicPolyline(coordinates: coordinates, count: coordinates.count)
-            colors[ObjectIdentifier(overlay)] = color; map.addOverlay(overlay)
+            let interiors = holes.map { ring -> MKPolygon in let c = ring.map(\.coordinate); return MKPolygon(coordinates: c, count: c.count) }
+            let overlay: MKOverlay = polygon ? MKPolygon(coordinates: coordinates, count: coordinates.count, interiorPolygons: interiors) : MKGeodesicPolyline(coordinates: coordinates, count: coordinates.count)
+            colors[ObjectIdentifier(overlay)] = color; vectorStyles[ObjectIdentifier(overlay)] = style; map.addOverlay(overlay)
         }
         func mapViewDidFinishRenderingMap(_ mapView: MKMapView, fullyRendered: Bool) {
             if fullyRendered { DispatchQueue.main.async { [weak self] in self?.store.transitionImage = nil } }
@@ -284,19 +285,16 @@ struct MapCanvas: NSViewRepresentable {
             if overlay is EarthGroundImage { return EarthGroundImageRenderer(overlay:overlay) }
             if let tiles = overlay as? MKTileOverlay { return MKTileOverlayRenderer(tileOverlay: tiles) }
             let color = colors[ObjectIdentifier(overlay)] ?? .systemYellow
-            if let kind = publicDataOverlays.first(where: { $0.value === overlay as AnyObject })?.key,
-               let lines = overlay as? MKMultiPolyline {
-                let renderer = MKMultiPolylineRenderer(multiPolyline: lines)
-                renderer.strokeColor = NSColor(earthHex: PublicDataSource.source(kind).color).withAlphaComponent(store.publicDataOpacity[kind] ?? 0.9)
-                renderer.lineWidth = 1.5; return renderer
-            }
             if let lines = overlay as? MKMultiPolyline {
                 let renderer = MKMultiPolylineRenderer(multiPolyline: lines); renderer.strokeColor = color.withAlphaComponent(0.8); renderer.lineWidth = 1; return renderer
             }
             if let polygon = overlay as? MKPolygon {
-                let renderer = MKPolygonRenderer(polygon: polygon); renderer.strokeColor = color; renderer.fillColor = color.withAlphaComponent(0.2); renderer.lineWidth = 2.5; return renderer
+                let renderer = MKPolygonRenderer(polygon: polygon); let style = publicPolygonStyles[ObjectIdentifier(overlay)] ?? vectorStyles[ObjectIdentifier(overlay)]
+                renderer.strokeColor = NSColor(earthHex: style?.stroke ?? "#F5C542").withAlphaComponent(style?.strokeOpacity ?? 1)
+                renderer.fillColor = style.map { NSColor(earthHex: $0.fill).withAlphaComponent($0.fillOpacity) } ?? color.withAlphaComponent(0.2)
+                if style == nil { renderer.strokeColor = color }; renderer.lineWidth = style?.width ?? 2.5; return renderer
             }
-            if let line = overlay as? MKPolyline { let renderer = MKPolylineRenderer(polyline: line); renderer.strokeColor = color; renderer.lineWidth = 3; return renderer }
+            if let line = overlay as? MKPolyline { let renderer = MKPolylineRenderer(polyline: line); let style = vectorStyles[ObjectIdentifier(overlay)]; renderer.strokeColor = style.map { NSColor(earthHex: $0.stroke).withAlphaComponent($0.strokeOpacity) } ?? color; renderer.lineWidth = style?.width ?? 3; return renderer }
             return MKOverlayRenderer(overlay: overlay)
         }
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {

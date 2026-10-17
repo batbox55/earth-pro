@@ -101,7 +101,7 @@ struct ContentView: View {
                     let url: URL? = await withCheckedContinuation { continuation in
                         _ = provider.loadObject(ofClass: URL.self) { url, _ in continuation.resume(returning: url) }
                     }
-                    if let url, ["kml", "kmz"].contains(url.pathExtension.lowercased()) { urls.append(url) }
+                    if let url, (["kml", "kmz", "geojson", "json", "shp", "zip"].contains(url.pathExtension.lowercased()) || url.hasDirectoryPath) { urls.append(url) }
                 }
                 if !urls.isEmpty { store.importURLs(urls) }
             }

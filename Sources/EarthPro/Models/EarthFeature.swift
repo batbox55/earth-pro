@@ -49,9 +49,14 @@ struct EarthFeature: Codable, Identifiable, Equatable {
     var folderID: UUID?
     var pinShape: PinShape?
     var pinIcon: PinIcon?
+    var holes: [[GeoPoint]]?
+    var vectorStyle: VectorStyle?
+    var attributes: [String: String]?
+    var sourceID: String?
+    var vertexCount: Int { points.count + (holes ?? []).reduce(0) { $0 + $1.count } }
     var resolvedPinShape: PinShape { pinShape ?? .pin }
     var resolvedPinIcon: PinIcon { pinIcon ?? .location }
-    var isValid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (kind == .point ? points.count == 1 : points.count >= kind.minimumPoints) && points.allSatisfy(\.isValid) }
+    var isValid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (kind == .point ? points.count == 1 : points.count >= kind.minimumPoints) && points.allSatisfy(\.isValid) && (holes ?? []).allSatisfy { kind == .polygon && $0.count >= 4 && $0.first == $0.last && $0.allSatisfy(\.isValid) } && (vectorStyle?.isValid ?? true) }
     var center: GeoPoint { points.first ?? .init(latitude: 0, longitude: 0) }
     var distance: Double { GeoMath.length(points, closed: kind == .polygon) }
 }

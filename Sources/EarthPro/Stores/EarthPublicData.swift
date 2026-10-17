@@ -30,6 +30,21 @@ struct PublicDataSettings: Codable {
             return snapshot.features
         }
     }
+    var publicDataVectors: [(PublicDataKind, EarthFeature)] {
+        guard publicDataSupported else { return [] }
+        return PublicDataKind.allCases.flatMap { kind -> [(PublicDataKind, EarthFeature)] in
+            guard publicDataEnabled.contains(kind), !publicDataHidden.contains(kind),
+                  distance <= PublicDataSource.source(kind).maxDistance,
+                  let snapshot = publicDataSnapshots[kind], snapshot.bounds.contains(center) else { return [] }
+            let opacity = publicDataOpacity[kind] ?? 0.7
+            guard opacity > 0 else { return [] }
+            return snapshot.vectors.map { feature in
+                var feature = feature
+                if var style = feature.vectorStyle { style.fillOpacity *= opacity; style.strokeOpacity *= opacity; feature.vectorStyle = style }
+                return (kind,feature)
+            }
+        }
+    }
     var publicDataSettingsURL: URL { libraryURL.deletingPathExtension().appendingPathExtension("public-data.json") }
     func restorePublicDataSettings() {
         guard let data = try? Data(contentsOf: publicDataSettingsURL), let settings = try? JSONDecoder().decode(PublicDataSettings.self, from: data) else { return }

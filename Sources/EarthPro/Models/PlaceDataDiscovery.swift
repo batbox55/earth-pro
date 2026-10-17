@@ -34,7 +34,8 @@ struct DiscoveredDataService: Identifiable, Equatable, Sendable {
     let url: URL
     /// ArcGIS catalog item modification, not a guarantee of geometry freshness.
     let modifiedAt: Date?
-    var itemURL: URL { URL(string: "https://www.arcgis.com/home/item.html?id=" + id)! }
+    var sourceURL: URL? = nil
+    var itemURL: URL { sourceURL ?? URL(string: "https://www.arcgis.com/home/item.html?id=" + id)! }
 }
 struct DiscoveredDataLayer: Identifiable, Sendable {
     let id: Int

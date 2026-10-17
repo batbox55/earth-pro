@@ -62,19 +62,30 @@ actor CustomDataService {
         try Self.validateURL(url, format: format)
         let query = format == .arcGIS ? try Self.queryURL(url, bounds: bounds) : url
         let data = try await request(query)
-        var result = try Self.decodeGeoJSON(data: data)
+        var metadata: Data?
         if format == .arcGIS {
-            var metadataURL = URLComponents(url: url, resolvingAgainstBaseURL: false)!
-            metadataURL.queryItems = [URLQueryItem(name: "f", value: "json")]
-            if let metadata = try? await request(metadataURL.url!) {
-                result.providerUpdatedAt = Self.providerUpdateDate(data: metadata)
-            }
+            var metadataURL = URLComponents(url:url,resolvingAgainstBaseURL:false)!
+            metadataURL.queryItems = [URLQueryItem(name:"f",value:"json")]
+            metadata = try? await request(metadataURL.url!)
             try Task.checkCancellation()
         }
+        let renderer = metadata.flatMap(VectorStyling.arcGIS)
+        var result = try Self.decodeGeoJSON(data:data,requiredFields:renderer?.fields ?? [])
+        if let metadata { result.providerUpdatedAt = Self.providerUpdateDate(data:metadata) }
+        renderer?.apply(&result)
         return result
     }
 
     private func request(_ url: URL) async throws -> Data {
+        do { return try await requestOnce(url) }
+        catch {
+            guard CustomDataService.shouldRetry(error) else { throw error }
+            // Retry once using the same normal TLS validation; never accept invalid certificates.
+            try await Task.sleep(for:.milliseconds(150))
+            return try await requestOnce(url)
+        }
+    }
+    private func requestOnce(_ url: URL) async throws -> Data {
         while requests >= 2 { try await Task.sleep(nanoseconds: 30_000_000) }
         try Task.checkCancellation()
         requests += 1
@@ -94,12 +105,16 @@ actor CustomDataService {
         return data
     }
 
+    static func shouldRetry(_ error: Error) -> Bool {
+        guard let error = error as? URLError else { return false }
+        return [.secureConnectionFailed,.networkConnectionLost,.timedOut,.cannotConnectToHost].contains(error.code)
+    }
     static func providerUpdateDate(data: Data) -> Date? {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         return SourceFreshnessService.editDate(object)
     }
 
-    static func decodeGeoJSON(data: Data) throws -> CustomDataResult {
+    static func decodeGeoJSON(data: Data, requiredFields: [String] = []) throws -> CustomDataResult {
         guard data.count <= byteLimit else { throw CustomDataError.tooLarge }
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw CustomDataError.unsupported }
         if object["error"] != nil { throw CustomDataError.unavailable }
@@ -131,15 +146,23 @@ actor CustomDataService {
                 return "\(String(key.prefix(100))): \(String(text.prefix(500)))"
             }.joined(separator: "\n")
             let parts = try decodeGeometry(geometry)
-            let size = parts.reduce(0) { $0 + $1.1.count }
+            let size = parts.reduce(0) { $0 + $1.1.count + $1.2.reduce(0) { $0 + $1.count } }
             guard result.count + parts.count <= featureLimit, vertices + size <= vertexLimit else { partial = true; continue }
             vertices += size
             for (part, value) in parts.enumerated() {
                 let title = parts.count == 1 ? name : "\(name) · \(part + 1)"
-                result.append(EarthFeature(name: String(title.prefix(200)), notes: String(notes.prefix(8_000)), kind: value.0, points: value.1))
+                var feature = EarthFeature(name: String(title.prefix(200)), notes: String(notes.prefix(8_000)), kind: value.0, points: value.1)
+                feature.sourceID = VectorStyling.scalar(record["id"]) ?? VectorStyling.scalar(properties["OBJECTID"])
+                feature.holes = value.2.isEmpty ? nil : value.2
+                feature.attributes = Array(Set(Array(properties.keys.sorted().prefix(60)) + requiredFields.prefix(3) + properties.keys.filter { VectorStyling.categoryFields.contains($0.lowercased()) })).reduce(into: [String:String]()) { values, key in if let scalar = VectorStyling.scalar(properties[key]) { values[String(key.prefix(100))] = String(scalar.prefix(500)) } else if requiredFields.contains(key), properties[key] is NSNull { values[key] = "<Null>" } }
+                feature.vectorStyle = VectorStyling.simpleStyle(properties)
+                feature.vectorStyle?.symbolKind = value.0
+                result.append(feature)
             }
         }
-        return .init(features: result, providerUpdatedAt: nil, partial: partial)
+        var decoded = CustomDataResult(features: result, providerUpdatedAt: nil, partial: partial)
+        VectorStyling.generated(&decoded)
+        return decoded
     }
 
     private static func validateCRS(_ object: [String: Any]) throws {
@@ -148,7 +171,7 @@ actor CustomDataService {
               ["urn:ogc:def:crs:OGC:1.3:CRS84", "urn:ogc:def:crs:EPSG::4326", "EPSG:4326", "http://www.opengis.net/def/crs/EPSG/0/4326"].contains(name) else { throw CustomDataError.invalidGeometry }
     }
 
-    private static func decodeGeometry(_ object: [String: Any]) throws -> [(FeatureKind, [GeoPoint])] {
+    private static func decodeGeometry(_ object: [String: Any]) throws -> [(FeatureKind, [GeoPoint], [[GeoPoint]])] {
         func point(_ coordinate: [Double]) throws -> GeoPoint {
             guard coordinate.count >= 2 else { throw CustomDataError.invalidGeometry }
             let point = GeoPoint(latitude: coordinate[1], longitude: coordinate[0], altitude: coordinate.count > 2 ? coordinate[2] : 0)
@@ -164,19 +187,22 @@ actor CustomDataService {
         switch type {
         case "Point":
             guard let coordinates = object["coordinates"] as? [Double] else { throw CustomDataError.invalidGeometry }
-            return [(.point, [try point(coordinates)])]
+            return [(.point, [try point(coordinates)], [])]
         case "MultiPoint":
             guard let coordinates = object["coordinates"] as? [[Double]], !coordinates.isEmpty else { throw CustomDataError.invalidGeometry }
-            return try coordinates.map { (.point, [try point($0)]) }
+            return try coordinates.map { (.point, [try point($0)], []) }
         case "LineString":
             guard let coordinates = object["coordinates"] as? [[Double]] else { throw CustomDataError.invalidGeometry }
-            return [(.path, try line(coordinates))]
-        case "MultiLineString", "Polygon":
+            return [(.path, try line(coordinates), [])]
+        case "MultiLineString":
             guard let coordinates = object["coordinates"] as? [[[Double]]], !coordinates.isEmpty else { throw CustomDataError.invalidGeometry }
-            return try coordinates.map { (.path, try line($0, ring: type == "Polygon")) }
+            return try coordinates.map { (.path, try line($0), []) }
+        case "Polygon":
+            guard let coordinates = object["coordinates"] as? [[[Double]]], let outer = coordinates.first else { throw CustomDataError.invalidGeometry }
+            return [(.polygon, try line(outer, ring: true), try coordinates.dropFirst().map { try line($0, ring: true) })]
         case "MultiPolygon":
             guard let coordinates = object["coordinates"] as? [[[[Double]]]], !coordinates.isEmpty, coordinates.allSatisfy({ !$0.isEmpty }) else { throw CustomDataError.invalidGeometry }
-            return try coordinates.flatMap { polygon in try polygon.map { (.path, try line($0, ring: true)) } }
+            return try coordinates.map { polygon in (.polygon, try line(polygon[0], ring: true), try polygon.dropFirst().map { try line($0, ring: true) }) }
         default: throw CustomDataError.unsupported
         }
     }

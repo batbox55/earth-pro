@@ -6,7 +6,7 @@ final class CustomDataTests: XCTestCase {
     private func feature(_ type: String, _ coordinates: Any) -> [String: Any] {
         ["type": "Feature", "properties": ["name": "Utility line", "operator": "City"], "geometry": ["type": type, "coordinates": coordinates]]
     }
-    func testGeoJSONPartsPreservePolygonHolesAsClosedOutlines() throws {
+    func testGeoJSONPartsPreserveFilledPolygonsAndHoles() throws {
         let outer = [[-118.0,33.0],[-117.0,33.0],[-117.0,34.0],[-118.0,33.0]]
         let hole = [[-117.9,33.1],[-117.8,33.1],[-117.8,33.2],[-117.9,33.1]]
         let records = [
@@ -15,9 +15,11 @@ final class CustomDataTests: XCTestCase {
             feature("Polygon", [outer, hole]), feature("MultiPolygon", [[outer, hole], [outer]])
         ]
         let result = try CustomDataService.decodeGeoJSON(data: data(["type": "FeatureCollection", "features": records]))
-        XCTAssertEqual(result.features.count, 11)
+        XCTAssertEqual(result.features.count, 9)
         XCTAssertEqual(result.features.filter { $0.kind == .point }.count, 3)
-        XCTAssertFalse(result.features.contains { $0.kind == .polygon })
+        XCTAssertEqual(result.features.filter { $0.kind == .polygon }.count, 3)
+        XCTAssertEqual(result.features.filter { $0.kind == .polygon }.first?.holes?.count, 1)
+        XCTAssertFalse(result.legend.isEmpty)
         XCTAssertTrue(result.features.allSatisfy(\.isValid))
         XCTAssertTrue(result.features[0].notes.contains("operator: City"))
         XCTAssertNil(result.providerUpdatedAt)
