@@ -1,0 +1,13 @@
+Open-source code; noncommercial service configuration
+
+Earth Pro's original application code and original artwork are open source under the MIT License. The MIT License permits commercial use of that code; it does not license third-party datasets, imagery, APIs, or services.
+
+The distributed app's included data/service configuration is not cleared for commercial use as-is. In particular, its online elevation feature uses Open-Meteo's free API, whose terms permit only noncommercial use. Do not use that free endpoint for commercial purposes. Commercial deployments must replace or properly license restricted services and review the rights for every enabled dataset, imagery source, custom connection, export, screenshot, and recording. A provider subscription or API key alone does not waive other providers' restrictions. The stock app does not provide a commercial Open-Meteo endpoint/key setting; a compliant alternative requires an adapted build or service configuration.
+
+This is a notice about third-party rights, not an added restriction on MIT-licensed code. Some sources permit commercial use, including public-domain datasets; others impose service, attribution, redistribution, or other conditions. Public access, a free download, or inclusion in a catalog does not establish permission for commercial reuse. No blanket commercial-content license is provided by Earth Pro.
+
+Provider terms checked October 17, 2026:
+Open-Meteo free API terms: https://open-meteo.com/en/terms
+Open-Meteo elevation API: https://open-meteo.com/en/docs/elevation-api
+Full project notices: https://github.com/batbox55/earth-pro/blob/main/THIRD_PARTY_NOTICES.md
+Earth Pro terms: https://zachenson.com/earth-pro/terms

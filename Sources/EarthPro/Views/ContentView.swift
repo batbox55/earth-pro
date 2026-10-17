@@ -270,7 +270,7 @@ struct ContentView: View {
             Text("Elevation starts with a coarse bundled estimate, including ocean-floor depths. Online Copernicus GLO-90 data refines land elevations after the pointer stops. Globe terrain remains a separate coarse model.")
             Link("Open-Meteo / Copernicus elevation source ↗", destination: URL(string: "https://open-meteo.com/en/docs/elevation-api")!)
             Link("Bundled terrain sources ↗", destination: URL(string: "https://github.com/tilezen/joerd/blob/master/docs/attribution.md")!)
-            Text("The free elevation endpoint is intended for non-commercial use.").font(.caption).foregroundStyle(.secondary)
+            Text("The free Open-Meteo elevation endpoint permits noncommercial use only. Commercial use requires a licensed replacement; see Help > License & Data Usage.").font(.caption).foregroundStyle(.secondary)
             Text("Eye altitude is the approximate camera height above a spherical Earth. Terrain clearance is not included.")
         }.font(.callout).padding(20).frame(width: 360)
     }

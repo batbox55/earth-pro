@@ -19,11 +19,14 @@ import AppKit
         .commands {
             CommandGroup(replacing: .appInfo) {
                 Button("About Earth Pro") {
-                    NSApp.orderFrontStandardAboutPanel(options: [.applicationIcon: EarthBrand.icon])
+                    NSApp.orderFrontStandardAboutPanel(options: [.applicationIcon: EarthBrand.icon, .credits: NSAttributedString(string: "Open-source code (MIT). Included data/services are not cleared for commercial use as-is. See Help > License & Data Usage.")])
                 }
             }
             CommandGroup(replacing: .help) {
                 Link("Earth Pro Guide & Support", destination: URL(string: "https://zachenson.com/earth-pro/support")!)
+                Button("License & Data Usage…") {
+                    if let url = Bundle.module.url(forResource: "License-Notice", withExtension: "txt") { NSWorkspace.shared.open(url) }
+                }
                 Link("Privacy Policy", destination: URL(string: "https://zachenson.com/earth-pro/privacy")!)
                 Link("Earth Pro on the Web", destination: URL(string: "https://zachenson.com/earth-pro/")!)
             }

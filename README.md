@@ -57,8 +57,10 @@ Run the existing tests:
 ./script/test.sh
 ```
 
-## License and credits
+## License and commercial-use limits
 
 Original application source and original app artwork are licensed under the **MIT License**. See [LICENSE](LICENSE). Bundled datasets, terrain data, imagery, provider services, and third-party names are **not relicensed by MIT**. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), the resource attribution files, and each provider's terms.
+
+**The distributed app’s included data/service configuration is not cleared for commercial use as-is.** Its Open-Meteo free elevation endpoint is noncommercial-only. Commercial deployments must replace or properly license restricted services and check every enabled dataset, imagery source, export, and recording against its provider terms. This does not restrict commercial rights to the MIT-licensed code. Some bundled sources are public domain; do not assume all sources prohibit commercial use. See the [full usage notice](Sources/EarthPro/Resources/License-Notice.txt).
 
 Bug reports and focused contributions are welcome through GitHub issues and pull requests. Please omit API keys, MCP tokens, private addresses, and personal map files from reports.
