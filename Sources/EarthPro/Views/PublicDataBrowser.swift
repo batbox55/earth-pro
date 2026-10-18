@@ -80,6 +80,7 @@ struct PublicDataBrowser: View {
                         }
                         Button("Manage saved layers and connections…") { store.showPublicData = false; store.showCustomData = true }
                     } else {
+                        DataLibrarySection(store: store)
                         discoveredServices
                         CatalogDataSection(store: store)
                         directory

@@ -17,8 +17,14 @@ enum CustomDataCategory: String, Codable, CaseIterable, Identifiable {
 }
 
 enum CustomDataFormat: String, Codable, CaseIterable {
-    case geoJSON, arcGIS
-    var title: String { self == .geoJSON ? "GeoJSON" : "ArcGIS feature layer" }
+    case geoJSON, arcGIS, openDataSoft
+    var title: String {
+        switch self {
+        case .geoJSON: "GeoJSON"
+        case .arcGIS: "ArcGIS feature layer"
+        case .openDataSoft: "OpenDataSoft geographic records"
+        }
+    }
 }
 
 struct CustomDataLayer: Codable, Identifiable {

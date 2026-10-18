@@ -43,6 +43,9 @@ actor CustomDataService {
             guard parts.count >= 2, let layer = Int(parts.last ?? ""), layer >= 0,
                   ["FeatureServer", "MapServer"].contains(parts[parts.count - 2]) else { throw CustomDataError.invalidURL }
         }
+        if format == .openDataSoft {
+            guard url.path.contains("/api/explore/v2.1/catalog/datasets/"), url.lastPathComponent == "records" else { throw CustomDataError.invalidURL }
+        }
     }
 
     static func queryURL(_ url: URL, bounds: PublicDataBounds) throws -> URL {
@@ -60,7 +63,12 @@ actor CustomDataService {
 
     func load(url: URL, format: CustomDataFormat, bounds: PublicDataBounds) async throws -> CustomDataResult {
         try Self.validateURL(url, format: format)
-        let query = format == .arcGIS ? try Self.queryURL(url, bounds: bounds) : url
+        var query = format == .arcGIS ? try Self.queryURL(url, bounds: bounds) : url
+        if format == .openDataSoft {
+            var components = URLComponents(url:url,resolvingAgainstBaseURL:false)!
+            components.queryItems = (components.queryItems ?? []).filter { $0.name != "limit" } + [.init(name:"limit",value:"100")]
+            query = components.url!
+        }
         let data = try await request(query)
         var metadata: Data?
         if format == .arcGIS {
@@ -70,10 +78,29 @@ actor CustomDataService {
             try Task.checkCancellation()
         }
         let renderer = metadata.flatMap(VectorStyling.arcGIS)
-        var result = try Self.decodeGeoJSON(data:data,requiredFields:renderer?.fields ?? [])
+        var result = format == .openDataSoft ? try Self.decodeOpenDataSoft(data) : try Self.decodeGeoJSON(data:data,requiredFields:renderer?.fields ?? [])
         if let metadata { result.providerUpdatedAt = Self.providerUpdateDate(data:metadata) }
         renderer?.apply(&result)
         return result
+    }
+
+    static func decodeOpenDataSoft(_ data: Data) throws -> CustomDataResult {
+        guard data.count <= byteLimit, let object = try JSONSerialization.jsonObject(with:data) as? [String:Any],
+              let records = object["results"] as? [[String:Any]], let total = object["total_count"] as? Int else { throw CustomDataError.unsupported }
+        var skipped = false
+        let features = records.prefix(featureLimit).compactMap { row -> [String:Any]? in
+            var shapes: [[String:Any]] = []
+            for key in row.keys.sorted() {
+                guard let value = row[key] as? [String:Any] else { continue }
+                if let geometry = value["geometry"] as? [String:Any] { shapes.append(geometry) }
+                else if value["type"] is String, value["coordinates"] != nil { shapes.append(value) }
+                else if let lon = value["lon"] as? Double, let lat = value["lat"] as? Double { shapes.append(["type":"Point","coordinates":[lon,lat]]) }
+            }
+            guard let geometry = shapes.first(where: { ["Polygon","MultiPolygon"].contains($0["type"] as? String ?? "") }) ?? shapes.first else { skipped = true; return nil }
+            return ["type":"Feature","geometry":geometry,"properties":row]
+        }
+        let collection: [String:Any] = ["type":"FeatureCollection","features":features,"exceededTransferLimit":skipped || total > records.count || records.count > featureLimit]
+        return try decodeGeoJSON(data:JSONSerialization.data(withJSONObject:collection))
     }
 
     private func request(_ url: URL) async throws -> Data {

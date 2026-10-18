@@ -86,7 +86,7 @@ struct CustomDataView: View {
                 Picker("Section", selection: $category) { ForEach(CustomDataCategory.allCases) { Text($0.title).tag($0) } }
                 Picker("Format", selection: $format) { ForEach(CustomDataFormat.allCases, id: \.self) { Text($0.title).tag($0) } }
             }
-            TextField("https://…/FeatureServer/0 or GeoJSON URL", text: $address).accessibilityLabel("Custom source URL")
+            TextField("Public GeoJSON, numbered ArcGIS layer, or OpenDataSoft records URL", text: $address).accessibilityLabel("Custom source URL")
             Text("Public sources only; URLs with API tokens or credentials are not saved.").font(.caption).foregroundStyle(.secondary)
             if let connectionError { Text(connectionError).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
             HStack {
